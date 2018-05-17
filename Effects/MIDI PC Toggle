@@ -1,24 +1,57 @@
-slider1: 0<0,1,1>PC 00
-slider2: 0<0,1,1>PC 01
-slider3: 0<0,1,1>PC 02
-slider4: 0<0,1,1>PC 03
-slider5: 0<0,1,1>PC 04
-slider6: 0<0,1,1>PC 05
-slider7: 0<0,1,1>PC 06
-slider8: 0<0,1,1>PC 07
-slider9: 0<0,1,1>PC 08
-slider10:0<0,1,1>PC 09
+slider0: 0<0,1,1>PC 00
+slider1: 0<0,1,1>PC 01
+slider2: 0<0,1,1>PC 02
+slider3: 0<0,1,1>PC 03
+slider4: 0<0,1,1>PC 04
+slider5: 0<0,1,1>PC 05
+slider6: 0<0,1,1>PC 06
+slider7: 0<0,1,1>PC 07
+slider8: 0<0,1,1>PC 08
+slider9: 0<0,1,1>PC 09
+slider10: 0<0,1,1>PC 10
+slider11: 0<0,1,1>PC 11
+slider12: 0<0,1,1>PC 12
+slider13: 0<0,1,1>PC 13
+slider14: 0<0,1,1>PC 14
+slider15: 0<0,1,1>PC 15
+slider16: 0<0,1,1>PC 16
+slider17: 0<0,1,1>PC 17
+slider18: 0<0,1,1>PC 18
+slider19: 0<0,1,1>PC 19
+slider20: 0<0,1,1>PC 20
+slider21: 0<0,1,1>PC 21
+slider22: 0<0,1,1>PC 22
+slider23: 0<0,1,1>PC 23
+slider24: 0<0,1,1>PC 24
+slider25: 0<0,1,1>PC 25
+slider26: 0<0,1,1>PC 26
+slider27: 0<0,1,1>PC 27
+slider28: 0<0,1,1>PC 28
+slider29: 0<0,1,1>PC 29
+slider30: 0<0,1,1>PC 30
+slider31: 0<0,1,1>PC 31
+slider32: 0<0,1,1>PC 32
+slider33: 0<0,1,1>PC 33
+slider34: 0<0,1,1>PC 34
+slider35: 0<0,1,1>PC 35
+slider36: 0<0,1,1>PC 36
+slider37: 0<0,1,1>PC 37
+slider38: 0<0,1,1>PC 38
+slider39: 0<0,1,1>PC 39
+slider40: 0<0,1,1>PC 40
+slider41: 0<0,1,1>PC 41
+slider42: 0<0,1,1>PC 42
+slider43: 0<0,1,1>PC 43
+slider44: 0<0,1,1>PC 44
+slider45: 0<0,1,1>PC 45
+slider46: 0<0,1,1>PC 46
+slider47: 0<0,1,1>PC 47
+slider48: 0<0,1,1>PC 48
+slider49: 0<0,1,1>PC 49
 
 @init
-mfc_array = 10;
 PROG_CHANGE = 12;
-
-@slider
-//Update array when sliders change (For example when loading presets)
-i=1;
-loop(10,
-  mfc_array[(i-1)] = slider(i);
-  i+=1);
+noOfSliders = 50;
 
 @block
 
@@ -33,9 +66,9 @@ loop(10,
       data1 = msg23 - (data2 * 256);
 
       statusHi == PROG_CHANGE ? (
-            i=0;loop(9, 
-              mfc_array[i] = data1 == i;
-              slider(i + 1) = mfc_array[(i)];
+            i=0;
+            loop(noOfSliders, 
+              slider(i + 1) = data1 == i;
             i+=1);
       );
       
