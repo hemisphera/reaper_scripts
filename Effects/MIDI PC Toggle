@@ -1,0 +1,44 @@
+slider1: 0<0,1,1>PC 00
+slider2: 0<0,1,1>PC 01
+slider3: 0<0,1,1>PC 02
+slider4: 0<0,1,1>PC 03
+slider5: 0<0,1,1>PC 04
+slider6: 0<0,1,1>PC 05
+slider7: 0<0,1,1>PC 06
+slider8: 0<0,1,1>PC 07
+slider9: 0<0,1,1>PC 08
+slider10:0<0,1,1>PC 09
+
+@init
+mfc_array = 10;
+PROG_CHANGE = 12;
+
+@slider
+//Update array when sliders change (For example when loading presets)
+i=1;
+loop(10,
+  mfc_array[(i-1)] = slider(i);
+  i+=1);
+
+@block
+
+  while (
+    midirecv(mpos, msg1, msg23) ? (
+      //midisend(mpos, msg1, msg23); // midi thru
+
+      statusHi = (msg1 / 16) | 0;
+      //statusLo = msg1 - (statusHi * 16);     
+
+      data2 = (msg23 / 256) | 0;
+      data1 = msg23 - (data2 * 256);
+
+      statusHi == PROG_CHANGE ? (
+            i=0;loop(9, 
+              mfc_array[i] = data1 == i;
+              slider(i + 1) = mfc_array[(i)];
+            i+=1);
+      );
+      
+      sliderchange(255);  // Update sliders
+    );
+  );
