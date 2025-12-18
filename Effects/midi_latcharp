@@ -1,0 +1,235 @@
+desc:MIDI Latch Arpeggiator
+
+slider1:0<0,6,1{Up,Down,Up-Down-Excl,Down-Up-Excl,Up-Down-Incl,Down-Up-Incl,Random}>Pattern
+slider2:4<1,32,1>Rate (1/16th notes)
+slider3:100<0,127,1>Velocity
+slider4:75<1,100,1>Gate (%)
+slider5:1<1,4,1>Octaves
+slider6:0<0,1,1{Off,On}>Latch Mode
+slider7:0<0,1,1{Off,On}>Retrigger at Measure
+
+@init
+// Note buffer - stores active notes
+note_count = 0;
+max_notes = 128;
+i = 0;
+loop(max_notes,
+  notes[i] = -1;
+  i += 1;
+);
+
+// Arpeggiator state
+arp_pos = 0;
+arp_direction = 1; // 1 for up, -1 for down
+last_note = -1;
+note_on = 0;
+latched = 0; // Track if notes are latched
+
+// Timing
+samples_per_step = 0;
+sample_count = 0;
+last_beat_pos = -1;
+
+@slider
+pattern = slider1;
+rate = slider2;
+velocity = slider3;
+gate_percent = slider4;
+octaves = slider5;
+latch_mode = slider6;
+retrigger_measure = slider7;
+
+@block
+// Check for measure boundary and retrigger if enabled
+retrigger_measure ? (
+  current_measure = floor(beat_position / ts_num);
+  last_measure >= 0 && current_measure != last_measure ? (
+    arp_pos = 0;
+  );
+  last_measure = current_measure;
+);
+
+// Calculate samples per step based on tempo and rate
+tempo_bpm = tempo;
+samples_per_beat = srate * 60 / tempo_bpm;
+samples_per_step = samples_per_beat / rate * 4; // *4 because rate is in 16th notes
+gate_samples = samples_per_step * gate_percent / 100;
+
+// Process incoming MIDI
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & 0xF0;
+  
+  // Note On
+  status == 0x90 && msg3 > 0 ? (
+    // In latch mode, if notes are latched, clear them first
+    latch_mode && latched && note_count > 0 ? (
+      i = 0;
+      loop(max_notes,
+        notes[i] = -1;
+        i += 1;
+      );
+      note_count = 0;
+      latched = 0;
+      arp_pos = 0;
+    );
+    
+    // Add note to buffer if not already present
+    found = 0;
+    i = 0;
+    loop(max_notes,
+      notes[i] == msg2 ? found = 1;
+      i += 1;
+    );
+    
+    !found ? (
+      // Find empty slot
+      i = 0;
+      loop(max_notes,
+        notes[i] == -1 ? (
+          notes[i] = msg2;
+          note_count += 1;
+          i = max_notes; // Break
+        );
+        i += 1;
+      );
+      
+      // Sort notes array
+      j = 0;
+      loop(max_notes - 1,
+        k = j + 1;
+        loop(max_notes - j - 1,
+          notes[j] > notes[k] && notes[j] != -1 && notes[k] != -1 ? (
+            temp = notes[j];
+            notes[j] = notes[k];
+            notes[k] = temp;
+          );
+          k += 1;
+        );
+        j += 1;
+      );
+    );
+  );
+  
+  // Note Off
+  status == 0x80 || (status == 0x90 && msg3 == 0) ? (
+    // In latch mode, don't remove notes - just mark as latched
+    latch_mode ? (
+      latched = 1;
+    ) : (
+      // Remove note from buffer
+      i = 0;
+      loop(max_notes,
+        notes[i] == msg2 ? (
+          notes[i] = -1;
+          note_count -= 1;
+        );
+        i += 1;
+      );
+      
+      // Compact array
+      i = 0;
+      j = 0;
+      loop(max_notes,
+        notes[i] != -1 ? (
+          notes[j] = notes[i];
+          j += 1;
+        );
+        i += 1;
+      );
+      loop(max_notes - j,
+        notes[j + i] = -1;
+        i += 1;
+      );
+    );
+  );
+);
+
+@sample
+// Only play if we have notes AND (latch is on OR notes aren't just latched)
+note_count > 0 && (latch_mode || !latched) ? (
+  sample_count >= samples_per_step ? (
+    // Turn off last note if playing
+    note_on && last_note >= 0 ? (
+      midisend(offset, 0x80, last_note, 0);
+      note_on = 0;
+    );
+    
+    // Get next note based on pattern
+    pattern == 0 ? ( // Up
+      note_idx = arp_pos % note_count;
+      oct = floor(arp_pos / note_count) % octaves;
+    ) : pattern == 1 ? ( // Down
+      note_idx = note_count - 1 - (arp_pos % note_count);
+      oct = floor(arp_pos / note_count) % octaves;
+    ) : pattern == 2 ? ( // Up-Down-Excl
+      cycle_len = note_count * 2 - 2;
+      cycle_len = max(cycle_len, 1);
+      pos_in_cycle = arp_pos % cycle_len;
+      note_idx = pos_in_cycle < note_count ? pos_in_cycle : cycle_len - pos_in_cycle;
+      oct = floor(arp_pos / cycle_len) % octaves;
+    ) : pattern == 3 ? ( // Down-Up-Excl
+      cycle_len = note_count * 2 - 2;
+      cycle_len = max(cycle_len, 1);
+      pos_in_cycle = arp_pos % cycle_len;
+      note_idx = pos_in_cycle < note_count ? note_count - 1 - pos_in_cycle : pos_in_cycle - note_count + 1;
+      oct = floor(arp_pos / cycle_len) % octaves;
+    ) : pattern == 4 ? ( // Up-Down-Incl
+      cycle_len = note_count * 2;
+      pos_in_cycle = arp_pos % cycle_len;
+      note_idx = pos_in_cycle < note_count ? pos_in_cycle : cycle_len - pos_in_cycle - 1;
+      oct = floor(arp_pos / cycle_len) % octaves;
+    ) : pattern == 5 ? ( // Down-Up-Incl
+      cycle_len = note_count * 2;
+      pos_in_cycle = arp_pos % cycle_len;
+      note_idx = pos_in_cycle < note_count ? note_count - 1 - pos_in_cycle : pos_in_cycle - note_count;
+      oct = floor(arp_pos / cycle_len) % octaves;
+    ) : ( // Random
+      note_idx = rand() * note_count;
+      oct = rand() * octaves;
+    );
+    
+    note_idx = floor(note_idx);
+    oct = floor(oct);
+    
+    // Get note and add octave
+    last_note = notes[note_idx] + (oct * 12);
+    last_note = min(max(last_note, 0), 127);
+    
+    // Send note on
+    midisend(offset, 0x90, last_note, velocity);
+    note_on = 1;
+    
+    sample_count = 0;
+    arp_pos += 1;
+  );
+  
+  // Turn off note after gate time
+  note_on && sample_count >= gate_samples ? (
+    midisend(offset, 0x80, last_note, 0);
+    note_on = 0;
+  );
+  
+  sample_count += 1;
+) : (
+  // No notes held or latched without latch mode - turn off last note and reset
+  note_on && last_note >= 0 ? (
+    midisend(offset, 0x80, last_note, 0);
+    note_on = 0;
+  );
+  
+  // Only reset if latch mode is off
+  !latch_mode ? (
+    sample_count = 0;
+    arp_pos = 0;
+    // Clear latched state and notes when latch is off
+    latched ? (
+      i = 0;
+      loop(max_notes,
+        notes[i] = -1;
+        i += 1;
+      );
+      note_count = 0;
+      latched = 0;
+    );
+  );
+);
