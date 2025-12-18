@@ -1,0 +1,30 @@
+SCR 4 0 RS1ee9bb229dabffe151848d7efa3c10f748e1a1cf "Custom: lyrics.lua" Cockos/lyrics.lua
+SCR 4 32060 RS7d3c_1ee9bb229dabffe151848d7efa3c10f748e1a1cf "Custom: lyrics.lua" Cockos/lyrics.lua
+SCR 4 0 RS1cbf05b0c4f875518496f34a5ce45adefe05cb67 "Custom: Default_6.0_theme_adjuster.lua" Cockos/Default_6.0_theme_adjuster.lua
+SCR 4 0 RS8529c33ebfe6a23a1c8ae4de4d4d6a49cbe3af16 "Custom: asd.eel" C:\Users\thomas\Desktop\asd.eel
+SCR 4 0 RS1d8d78dcfe96a9e1c8e14b647d63bb80dfab3354 "Custom: ReaBlink_Monitor.lua" "ReaTeam Extensions/API/ReaBlink_Monitor.lua"
+ACT 0 0 "c8a40f54a5d1a04287da8adac299d066" "Custom: Mute Receive 10-17" 40948 41365 40949 41365 40950 41365 40951 41365 40952 41365 40953 41365 40954 41365 40955 41365
+ACT 0 0 "a6b37ff2ade4d24ab17fe9cd13d8faf2" "Custom: Mute Receive 20-27" 40958 41365 40959 41365 40960 41365 40961 41365 40963 41365 40962 41365 40964 41365 40965 41365
+ACT 0 0 "e8a0c096cdd6b348b55b90aaf7d08cc2" "Custom: Enable Send 10" _c8a40f54a5d1a04287da8adac299d066 40948 41365
+SCR 4 0 RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb "Custom: Mute Sends.lua" "C:\Users\thomas\Desktop\asd\Mute Sends.lua"
+ACT 0 0 "e60d995da254934390f52c378a5fa60e" "Custom: Select FX 1 - Block 1" 40948 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa011" "Custom: Select FX 2 - Block 1" 40949 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa012" "Custom: Select FX 3 - Block 1" 40950 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa013" "Custom: Select FX 4 - Block 1" 40951 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa014" "Custom: Select FX 5 - Block 1" 40952 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa015" "Custom: Select FX 6 - Block 1" 40953 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa016" "Custom: Select FX 7 - Block 1" 40954 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa017" "Custom: Select FX 8 - Block 1" 40955 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa018" "Custom: Select FX 9 - Block 1" 40956 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa019" "Custom: Select FX 10 - Block 1" 40957 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa020" "Custom: Select FX 1 - Block 2" 40958 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa021" "Custom: Select FX 2 - Block 2" 40959 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa022" "Custom: Select FX 3 - Block 2" 40960 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa023" "Custom: Select FX 4 - Block 2" 40961 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa024" "Custom: Select FX 5 - Block 2" 40962 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa025" "Custom: Select FX 6 - Block 2" 40963 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa026" "Custom: Select FX 7 - Block 2" 40964 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa027" "Custom: Select FX 8 - Block 2" 40965 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa028" "Custom: Select FX 9 - Block 2" 40966 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+ACT 0 0 "e60d995da254934390f52c378a5fa029" "Custom: Select FX 10 - Block 2" 40967 _RSaa7de30d20ac0dc17567ff6c0cc2e8f9fcdc3bdb
+KEY 1 49 _e60d995da254934390f52c378a5fa60e 0
