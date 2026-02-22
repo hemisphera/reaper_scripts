@@ -1,6 +1,6 @@
 desc:MIDI Looper (8 Slots)
-// Trigger (record/play):  notes 100-107   (slot 1-8)
-// Clear slot:             notes 90-97     (slot 1-8)
+// Trigger (record/play):  notes 100-107 on channel 7 (slot 1-8)
+// Clear slot:             notes 90-97   on channel 7 (slot 1-8)
 //
 // Behaviour:
 //   Empty  slot + trigger → start recording (quantised to next quarter note)
@@ -155,11 +155,12 @@ loop(NUM_SLOTS,
 // ─── 2. Process incoming MIDI ──────────────────────────────────────────────────
 while (midirecv(moffs, m1, m2, m3)) (
   mst   = m1 & 0xF0;
+  mch   = m1 & 0x0F;   // 0-indexed: channel 7 = 0x06
   mnote = m2;
   eaten = 0;           // 1 = consumed (not passed through)
 
-  // ── Trigger note-on (100-107) ──
-  mst == 0x90 && m3 > 0
+  // ── Trigger note-on (100-107) — channel 7 only ──
+  mst == 0x90 && mch == 6 && m3 > 0
     && mnote >= TRIGGER_NOTE_BASE
     && mnote <  TRIGGER_NOTE_BASE + NUM_SLOTS
   ? (
@@ -185,8 +186,8 @@ while (midirecv(moffs, m1, m2, m3)) (
     );
   );
 
-  // ── Clear note-on (90-97) ──
-  mst == 0x90 && m3 > 0
+  // ── Clear note-on (90-97) — channel 7 only ──
+  mst == 0x90 && mch == 6 && m3 > 0
     && mnote >= CLEAR_NOTE_BASE
     && mnote <  CLEAR_NOTE_BASE + NUM_SLOTS
   ? (
@@ -200,8 +201,8 @@ while (midirecv(moffs, m1, m2, m3)) (
     memset(MEM_REC_NOTES + sl * 128, 0, 128);
   );
 
-  // ── Eat note-offs that belong to trigger / clear notes ──
-  !eaten && (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
+  // ── Eat note-offs that belong to trigger / clear notes (channel 7 only) ──
+  !eaten && mch == 6 && (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
     (mnote >= TRIGGER_NOTE_BASE && mnote < TRIGGER_NOTE_BASE + NUM_SLOTS) ? eaten = 1;
     (mnote >= CLEAR_NOTE_BASE   && mnote < CLEAR_NOTE_BASE   + NUM_SLOTS) ? eaten = 1;
   );
@@ -379,7 +380,7 @@ loop(NUM_SLOTS,
 gfx_r = 0.55; gfx_g = 0.55; gfx_b = 0.55; gfx_a = 1;
 gfx_x = 4;
 gfx_y = sh + 6;
-gfx_drawstr("Trigger: N100-107  |  Clear: N90-97  |  Quantised to quarter note");
+gfx_drawstr("Trigger: N100-107 ch7  |  Clear: N90-97 ch7  |  Quantised to quarter note");
 
 // ════════════════════════════════════════════════════════════════════════════════
 @serialize
