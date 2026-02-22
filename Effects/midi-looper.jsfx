@@ -1,0 +1,388 @@
+desc:MIDI Looper (8 Slots)
+// Trigger (record/play):  notes 100-107   (slot 1-8)
+// Clear slot:             notes 90-97     (slot 1-8)
+//
+// Behaviour:
+//   Empty  slot + trigger → start recording (quantised to next quarter note)
+//   Recording slot + trigger → stop recording, begin looped playback
+//   Playing  slot + trigger → stop playback
+//   Stopped  slot + trigger → resume looped playback
+//   Any      slot + clear  → erase contents, silence active notes
+//
+// All record/play transitions are quantised to the next quarter-note boundary.
+
+@init
+
+// ─── States ────────────────────────────────────────────────────────────────────
+STATE_EMPTY           = 0;
+STATE_REC_ARMED       = 1;
+STATE_RECORDING       = 2;
+STATE_STOP_REC_ARMED  = 3;
+STATE_PLAYING         = 4;
+STATE_PLAY_ARMED      = 5;
+STATE_STOP_PLAY_ARMED = 6;
+STATE_STOPPED         = 7;
+
+NUM_SLOTS             = 8;
+MAX_EVENTS            = 4096;   // per slot
+EVENT_SIZE            = 4;      // beat_offset, msg1, msg2, msg3
+
+TRIGGER_NOTE_BASE     = 100;    // 100-107
+CLEAR_NOTE_BASE       = 90;     // 90-97
+
+// ─── Memory map ────────────────────────────────────────────────────────────────
+// Metadata arrays (8 entries each, padded to 16)
+MEM_STATE       = 0;       // [0 ..  7]  slot state
+MEM_EVT_COUNT   = 16;      // [16.. 23]  number of recorded events
+MEM_LOOP_LEN    = 32;      // [32.. 39]  loop length in beats (quarter notes)
+MEM_REC_START   = 48;      // [48.. 55]  beat_position when recording began
+MEM_PLAY_START  = 64;      // [64.. 71]  beat_position when playback began
+MEM_TARGET      = 80;      // [80.. 87]  target beat for armed→active transition
+
+// Per-slot note tracking (8 × 128)
+MEM_PLAY_NOTES  = 128;     // [128 ..1151]  notes currently sounding during playback
+MEM_REC_NOTES   = 1200;    // [1200..2223]  notes held during recording
+
+// Event storage  (8 × 4096 × 4 = 131 072 values, starting at 2500)
+MEM_EVENTS      = 2500;
+//   slot s, event j → MEM_EVENTS + s*16384 + j*4
+//   [+0] beat offset   [+1] msg1   [+2] msg2   [+3] msg3
+
+// ─── Initialise ────────────────────────────────────────────────────────────────
+i = 0;
+loop(NUM_SLOTS,
+  MEM_STATE[i]      = STATE_EMPTY;
+  MEM_EVT_COUNT[i]  = 0;
+  MEM_LOOP_LEN[i]   = 0;
+  MEM_REC_START[i]  = 0;
+  MEM_PLAY_START[i] = 0;
+  MEM_TARGET[i]     = 0;
+  i += 1;
+);
+memset(MEM_PLAY_NOTES, 0, NUM_SLOTS * 128);
+memset(MEM_REC_NOTES,  0, NUM_SLOTS * 128);
+
+// ─── Helper functions ──────────────────────────────────────────────────────────
+
+// Next quarter-note boundary (with small epsilon for floating-point safety)
+function next_quant_beat() (
+  ceil(beat_position - 0.005);
+);
+
+// Address of event `idx` in `slot`
+function evt_addr(slot, idx) (
+  MEM_EVENTS + slot * (MAX_EVENTS * EVENT_SIZE) + idx * EVENT_SIZE;
+);
+
+// Send note-off for every note currently sounding in a playback slot
+function send_all_notes_off(slot) local(n base) (
+  base = MEM_PLAY_NOTES + slot * 128;
+  n = 0;
+  loop(128,
+    base[n] ? (
+      midisend(0, 0x80, n, 0);
+      base[n] = 0;
+    );
+    n += 1;
+  );
+);
+
+// Close out a recording: insert note-offs for any still-held notes, compute
+// loop length, store final event count.
+function finalize_recording(slot) local(n base ec addr ll) (
+  ll = MEM_TARGET[slot] - MEM_REC_START[slot];
+  ll <= 0 ? ll = 1;            // safety: at least 1 beat
+
+  ec   = MEM_EVT_COUNT[slot];
+  base = MEM_REC_NOTES + slot * 128;
+
+  n = 0;
+  loop(128,
+    base[n] && ec < MAX_EVENTS ? (
+      addr    = evt_addr(slot, ec);
+      addr[0] = ll - 0.001;    // just before loop boundary
+      addr[1] = 0x80;          // note-off
+      addr[2] = n;
+      addr[3] = 0;
+      ec += 1;
+      base[n] = 0;
+    );
+    n += 1;
+  );
+
+  MEM_EVT_COUNT[slot] = ec;
+  MEM_LOOP_LEN[slot]  = ll;
+);
+
+// ════════════════════════════════════════════════════════════════════════════════
+@block
+
+// ─── Timing ────────────────────────────────────────────────────────────────────
+bps       = tempo / (60 * srate);        // beats per sample
+blk_beats = samplesblock * bps;          // beats in this block
+blk_end   = beat_position + blk_beats;
+
+// ─── 1. Armed-state transitions ────────────────────────────────────────────────
+i = 0;
+loop(NUM_SLOTS,
+  st  = MEM_STATE[i];
+  tgt = MEM_TARGET[i];
+
+  // REC_ARMED → RECORDING
+  st == STATE_REC_ARMED && blk_end >= tgt ? (
+    MEM_STATE[i]     = STATE_RECORDING;
+    MEM_REC_START[i] = tgt;
+    MEM_EVT_COUNT[i] = 0;
+    memset(MEM_REC_NOTES + i * 128, 0, 128);
+  );
+
+  // STOP_REC_ARMED → finalise + PLAYING
+  st == STATE_STOP_REC_ARMED && blk_end >= tgt ? (
+    finalize_recording(i);
+    MEM_STATE[i]      = STATE_PLAYING;
+    MEM_PLAY_START[i] = tgt;
+  );
+
+  // PLAY_ARMED → PLAYING
+  st == STATE_PLAY_ARMED && blk_end >= tgt ? (
+    MEM_STATE[i]      = STATE_PLAYING;
+    MEM_PLAY_START[i] = tgt;
+  );
+
+  // STOP_PLAY_ARMED → STOPPED
+  st == STATE_STOP_PLAY_ARMED && blk_end >= tgt ? (
+    send_all_notes_off(i);
+    MEM_STATE[i] = STATE_STOPPED;
+  );
+
+  i += 1;
+);
+
+// ─── 2. Process incoming MIDI ──────────────────────────────────────────────────
+while (midirecv(moffs, m1, m2, m3)) (
+  mst   = m1 & 0xF0;
+  mnote = m2;
+  eaten = 0;           // 1 = consumed (not passed through)
+
+  // ── Trigger note-on (100-107) ──
+  mst == 0x90 && m3 > 0
+    && mnote >= TRIGGER_NOTE_BASE
+    && mnote <  TRIGGER_NOTE_BASE + NUM_SLOTS
+  ? (
+    sl = mnote - TRIGGER_NOTE_BASE;
+    ss = MEM_STATE[sl];
+    eaten = 1;
+
+    ss == STATE_EMPTY ? (
+      MEM_STATE[sl]  = STATE_REC_ARMED;
+      MEM_TARGET[sl] = next_quant_beat();
+    ) :
+    ss == STATE_RECORDING ? (
+      MEM_STATE[sl]  = STATE_STOP_REC_ARMED;
+      MEM_TARGET[sl] = next_quant_beat();
+    ) :
+    ss == STATE_STOPPED ? (
+      MEM_STATE[sl]  = STATE_PLAY_ARMED;
+      MEM_TARGET[sl] = next_quant_beat();
+    ) :
+    ss == STATE_PLAYING ? (
+      MEM_STATE[sl]  = STATE_STOP_PLAY_ARMED;
+      MEM_TARGET[sl] = next_quant_beat();
+    );
+  );
+
+  // ── Clear note-on (90-97) ──
+  mst == 0x90 && m3 > 0
+    && mnote >= CLEAR_NOTE_BASE
+    && mnote <  CLEAR_NOTE_BASE + NUM_SLOTS
+  ? (
+    sl    = mnote - CLEAR_NOTE_BASE;
+    eaten = 1;
+
+    send_all_notes_off(sl);
+    MEM_STATE[sl]     = STATE_EMPTY;
+    MEM_EVT_COUNT[sl] = 0;
+    MEM_LOOP_LEN[sl]  = 0;
+    memset(MEM_REC_NOTES + sl * 128, 0, 128);
+  );
+
+  // ── Eat note-offs that belong to trigger / clear notes ──
+  !eaten && (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
+    (mnote >= TRIGGER_NOTE_BASE && mnote < TRIGGER_NOTE_BASE + NUM_SLOTS) ? eaten = 1;
+    (mnote >= CLEAR_NOTE_BASE   && mnote < CLEAR_NOTE_BASE   + NUM_SLOTS) ? eaten = 1;
+  );
+
+  // ── Pass through everything else (and record if a slot is active) ──
+  !eaten ? (
+    midisend(moffs, m1, m2, m3);
+
+    // Store into every slot that is currently recording
+    j = 0;
+    loop(NUM_SLOTS,
+      MEM_STATE[j] == STATE_RECORDING ? (
+        ec = MEM_EVT_COUNT[j];
+        ec < MAX_EVENTS ? (
+          sbeat = beat_position + moffs * bps;        // sample-accurate beat
+          boff  = sbeat - MEM_REC_START[j];
+          boff >= 0 ? (
+            addr    = evt_addr(j, ec);
+            addr[0] = boff;
+            addr[1] = m1;
+            addr[2] = m2;
+            addr[3] = m3;
+            MEM_EVT_COUNT[j] = ec + 1;
+
+            // Track held notes for finalize_recording
+            mst == 0x90 && m3 > 0 ? (
+              (MEM_REC_NOTES + j * 128)[m2] = 1;
+            );
+            (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
+              (MEM_REC_NOTES + j * 128)[m2] = 0;
+            );
+          );
+        );
+      );
+      j += 1;
+    );
+  );
+);
+
+// ─── 3. Playback ───────────────────────────────────────────────────────────────
+i = 0;
+loop(NUM_SLOTS,
+  MEM_STATE[i] == STATE_PLAYING ? (
+    ll = MEM_LOOP_LEN[i];
+    ll > 0 ? (
+      elapsed = beat_position - MEM_PLAY_START[i];
+
+      // Current position inside the loop  (fmod that works for negative values)
+      lp     = elapsed - floor(elapsed / ll) * ll;
+      lp_end = lp + blk_beats;
+
+      ec = MEM_EVT_COUNT[i];
+      j  = 0;
+      loop(ec,
+        addr = evt_addr(i, j);
+        eb   = addr[0];               // event beat offset within loop
+
+        // Does this event fall inside the current block window?
+        fire = 0;
+        lp_end > ll ? (
+          // Block straddles the loop boundary
+          (eb >= lp && eb < ll)          ? fire = 1;
+          (eb >= 0  && eb < lp_end - ll) ? fire = 1;
+        ) : (
+          (eb >= lp && eb < lp_end)      ? fire = 1;
+        );
+
+        fire ? (
+          // Sample offset within the block
+          d  = eb - lp;
+          d < 0 ? d += ll;
+          so = floor(d / bps);
+          so = min(max(so, 0), samplesblock - 1);
+
+          midisend(so, addr[1], addr[2], addr[3]);
+
+          // Track sounding notes so we can silence them on stop
+          es = addr[1] & 0xF0;
+          es == 0x90 && addr[3] > 0 ? (
+            (MEM_PLAY_NOTES + i * 128)[addr[2]] = 1;
+          );
+          (es == 0x80 || (es == 0x90 && addr[3] == 0)) ? (
+            (MEM_PLAY_NOTES + i * 128)[addr[2]] = 0;
+          );
+        );
+
+        j += 1;
+      );
+    );
+  );
+  i += 1;
+);
+
+// ════════════════════════════════════════════════════════════════════════════════
+@gfx 620 200
+
+gfx_setfont(1, "Arial", 14);
+sw = gfx_w / NUM_SLOTS;           // slot column width
+sh = gfx_h - 28;                  // leave room for legend bar
+
+i = 0;
+loop(NUM_SLOTS,
+  st = MEM_STATE[i];
+  sx = i * sw;
+
+  // ── Slot background colour ──
+  st == STATE_EMPTY ? (
+    gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15;
+  ) :
+  (st == STATE_REC_ARMED || st == STATE_STOP_REC_ARMED) ? (
+    gfx_r = 0.55; gfx_g = 0.30; gfx_b = 0.05;
+  ) :
+  st == STATE_RECORDING ? (
+    gfx_r = 0.80; gfx_g = 0.10; gfx_b = 0.10;
+  ) :
+  (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED) ? (
+    gfx_r = 0.10; gfx_g = 0.55; gfx_b = 0.10;
+  ) :
+  st == STATE_STOPPED ? (
+    gfx_r = 0.25; gfx_g = 0.25; gfx_b = 0.45;
+  );
+
+  gfx_a = 1;
+  gfx_rect(sx + 2, 2, sw - 4, sh - 4);
+
+  // ── Text ──
+  gfx_r = 1; gfx_g = 1; gfx_b = 1;
+
+  // Slot number
+  gfx_x = sx + sw * 0.5 - 4;
+  gfx_y = 8;
+  gfx_drawnumber(i + 1, 0);
+
+  // State label
+  gfx_x = sx + 6;
+  gfx_y = 32;
+  st == STATE_EMPTY           ? gfx_drawstr("Empty")  :
+  st == STATE_REC_ARMED       ? gfx_drawstr("Armed")  :
+  st == STATE_RECORDING       ? gfx_drawstr("REC")    :
+  st == STATE_STOP_REC_ARMED  ? gfx_drawstr("End..")  :
+  st == STATE_PLAYING         ? gfx_drawstr("PLAY")   :
+  st == STATE_PLAY_ARMED      ? gfx_drawstr("Arm>")   :
+  st == STATE_STOP_PLAY_ARMED ? gfx_drawstr("Stop..") :
+  st == STATE_STOPPED         ? gfx_drawstr("Ready");
+
+  // Loop length
+  MEM_LOOP_LEN[i] > 0 ? (
+    gfx_x = sx + 6;
+    gfx_y = 54;
+    gfx_drawnumber(MEM_LOOP_LEN[i], 1);
+    gfx_drawstr(" beats");
+  );
+
+  // Event count
+  MEM_EVT_COUNT[i] > 0 ? (
+    gfx_x = sx + 6;
+    gfx_y = 74;
+    gfx_drawnumber(MEM_EVT_COUNT[i], 0);
+    gfx_drawstr(" evts");
+  );
+
+  // Playback progress bar
+  st == STATE_PLAYING && MEM_LOOP_LEN[i] > 0 ? (
+    elapsed_pb = beat_position - MEM_PLAY_START[i];
+    lp_pb = elapsed_pb - floor(elapsed_pb / MEM_LOOP_LEN[i]) * MEM_LOOP_LEN[i];
+    pct = lp_pb / MEM_LOOP_LEN[i];
+    gfx_r = 0.3; gfx_g = 1.0; gfx_b = 0.3; gfx_a = 0.6;
+    gfx_rect(sx + 4, sh - 18, (sw - 8) * pct, 12);
+  );
+
+  i += 1;
+);
+
+// ── Legend bar ──
+gfx_r = 0.55; gfx_g = 0.55; gfx_b = 0.55; gfx_a = 1;
+gfx_x = 4;
+gfx_y = sh + 6;
+gfx_drawstr("Trigger: N100-107  |  Clear: N90-97  |  Quantised to quarter note");
