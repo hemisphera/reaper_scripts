@@ -13,7 +13,13 @@ desc:MIDI Looper (8 Slots)
 
 @init
 
-// ─── States ────────────────────────────────────────────────────────────────────
+// ─── Initialise ────────────────────────────────────────────────────────────────
+// @init runs on plugin load AND on every transport start/stop. Normally REAPER
+// zeroes ALL memory and variables before each @init call. The presence of a
+// non-empty @serialize section (see bottom of file) suppresses that behaviour,
+// so memory and variables survive transport events without any sentinel tricks.
+
+// Re-declare constants on every @init (they always get the same values anyway):
 STATE_EMPTY           = 0;
 STATE_REC_ARMED       = 1;
 STATE_RECORDING       = 2;
@@ -24,43 +30,31 @@ STATE_STOP_PLAY_ARMED = 6;
 STATE_STOPPED         = 7;
 
 NUM_SLOTS             = 8;
-MAX_EVENTS            = 4096;   // per slot
-EVENT_SIZE            = 4;      // beat_offset, msg1, msg2, msg3
+MAX_EVENTS            = 4096;
+EVENT_SIZE            = 4;
 
-TRIGGER_NOTE_BASE     = 100;    // 100-107
-CLEAR_NOTE_BASE       = 90;     // 90-97
+TRIGGER_NOTE_BASE     = 100;
+CLEAR_NOTE_BASE       = 90;
 
-// ─── Memory map ────────────────────────────────────────────────────────────────
-// Metadata arrays (8 entries each, padded to 16)
-MEM_STATE       = 0;       // [0 ..  7]  slot state
-MEM_EVT_COUNT   = 16;      // [16.. 23]  number of recorded events
-MEM_LOOP_LEN    = 32;      // [32.. 39]  loop length in beats (quarter notes)
-MEM_REC_START   = 48;      // [48.. 55]  beat_position when recording began
-MEM_PLAY_START  = 64;      // [64.. 71]  beat_position when playback began
-MEM_TARGET      = 80;      // [80.. 87]  target beat for armed→active transition
-
-// Per-slot note tracking (8 × 128)
-MEM_PLAY_NOTES  = 128;     // [128 ..1151]  notes currently sounding during playback
-MEM_REC_NOTES   = 1200;    // [1200..2223]  notes held during recording
-
-// Event storage  (8 × 4096 × 4 = 131 072 values, starting at 2500)
+MEM_STATE       = 0;
+MEM_EVT_COUNT   = 16;
+MEM_LOOP_LEN    = 32;
+MEM_REC_START   = 48;
+MEM_PLAY_START  = 64;
+MEM_TARGET      = 80;
+MEM_PLAY_NOTES  = 128;
+MEM_REC_NOTES   = 1200;
 MEM_EVENTS      = 2500;
-//   slot s, event j → MEM_EVENTS + s*16384 + j*4
-//   [+0] beat offset   [+1] msg1   [+2] msg2   [+3] msg3
 
-// ─── Initialise ────────────────────────────────────────────────────────────────
+// Clear slot data only on first load (memory is 0 at load time).
+// On subsequent @init calls (transport events) memory is preserved because
+// @serialize is defined below — so this block naturally does nothing since
+// the slot states will already be non-zero for any slot in use.
 i = 0;
 loop(NUM_SLOTS,
-  MEM_STATE[i]      = STATE_EMPTY;
-  MEM_EVT_COUNT[i]  = 0;
-  MEM_LOOP_LEN[i]   = 0;
-  MEM_REC_START[i]  = 0;
-  MEM_PLAY_START[i] = 0;
-  MEM_TARGET[i]     = 0;
+  MEM_STATE[i]      == 0 ? MEM_STATE[i]      = STATE_EMPTY;
   i += 1;
 );
-memset(MEM_PLAY_NOTES, 0, NUM_SLOTS * 128);
-memset(MEM_REC_NOTES,  0, NUM_SLOTS * 128);
 
 // ─── Helper functions ──────────────────────────────────────────────────────────
 
@@ -386,3 +380,11 @@ gfx_r = 0.55; gfx_g = 0.55; gfx_b = 0.55; gfx_a = 1;
 gfx_x = 4;
 gfx_y = sh + 6;
 gfx_drawstr("Trigger: N100-107  |  Clear: N90-97  |  Quantised to quarter note");
+
+// ════════════════════════════════════════════════════════════════════════════════
+@serialize
+// The presence of this section (even without file_var/file_mem calls) tells
+// REAPER not to zero memory and variables before calling @init. This is what
+// keeps recorded loop data alive across transport start/stop events.
+// See: https://www.reaper.fm/sdk/js/js.php  (@init documentation)
+0;
