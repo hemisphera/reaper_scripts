@@ -12,12 +12,14 @@ desc:MIDI Looper (8 Slots)
 //   Any      slot + clear  → erase contents, silence active notes
 //
 // All record/play transitions are quantised to the selected quarter-note length.
+// Recorded notes can also be quantised (default: 1/16).
 
 slider1:7<1,16,1>Control Channel
 slider2:1<0.5,4,0.5>Quantization (quarter notes)
 slider3:100<0,120,1>Trigger Base Note
 slider4:110<0,120,1>Overdub Base Note
 slider5:90<0,120,1>Clear Base Note
+slider6:0.25<0,1,0.0625>Record Note Quantize (beats, 0=Off)
 
 @init
 
@@ -294,6 +296,8 @@ while (midirecv(moffs, m1, m2, m3)) (
     midisend(moffs, m1, m2, m3);
 
     // Store into every slot that is currently recording
+    is_note_evt = (mst == 0x80 || mst == 0x90);
+    rec_q = max(slider6, 0);
     j = 0;
     loop(NUM_SLOTS,
       (MEM_STATE[j] == STATE_RECORDING || MEM_STATE[j] == STATE_OVERDUBBING) ? (
@@ -311,6 +315,19 @@ while (midirecv(moffs, m1, m2, m3)) (
               boff = -1;
             );
           );
+
+          // Quantize recorded NOTE event times if enabled (in beats).
+          // 1/16th = 0.25 beats, 1/32nd = 0.125 beats, etc.
+          rec_q > 0 && is_note_evt && boff >= 0 ? (
+            boff = floor(boff / rec_q + 0.5) * rec_q;
+
+            MEM_STATE[j] == STATE_OVERDUBBING ? (
+              llj > 0 ? boff = boff - floor(boff / llj) * llj;
+            ) : (
+              boff < 0 ? boff = 0;
+            );
+          );
+
           boff >= 0 ? (
             addr    = evt_addr(j, ec);
             addr[0] = boff;
@@ -497,7 +514,13 @@ gfx_drawstr(" | Ch:");
 gfx_drawnumber(slider1, 0);
 gfx_drawstr(" | Q:");
 gfx_drawnumber(slider2, 1);
-gfx_drawstr(" qn");
+gfx_drawstr(" qn | NQ:");
+slider6 > 0 ? (
+  gfx_drawnumber(slider6, 4);
+  gfx_drawstr("b");
+) : (
+  gfx_drawstr("Off");
+);
 
 // ════════════════════════════════════════════════════════════════════════════════
 @serialize
