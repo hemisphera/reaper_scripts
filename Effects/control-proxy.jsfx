@@ -1,0 +1,85 @@
+desc:Control Proxy (8 CC -> 8 sliders)
+
+slider1:0<0,127,1>Controller 1 Value
+slider2:0<0,127,1>Controller 2 Value
+slider3:0<0,127,1>Controller 3 Value
+slider4:0<0,127,1>Controller 4 Value
+slider5:0<0,127,1>Controller 5 Value
+slider6:0<0,127,1>Controller 6 Value
+slider7:0<0,127,1>Controller 7 Value
+slider8:0<0,127,1>Controller 8 Value
+
+slider9:20<0,127,1>Controller 1 CC Number
+slider10:21<0,127,1>Controller 2 CC Number
+slider11:22<0,127,1>Controller 3 CC Number
+slider12:23<0,127,1>Controller 4 CC Number
+slider13:24<0,127,1>Controller 5 CC Number
+slider14:25<0,127,1>Controller 6 CC Number
+slider15:26<0,127,1>Controller 7 CC Number
+slider16:27<0,127,1>Controller 8 CC Number
+
+slider17:0<0,1,1{Absolute,Relative}>Incoming MIDI Mode
+slider18:1<0.1,16,0.1>Relative Factor
+
+@init
+function clamp127(v)
+(
+	v < 0 ? 0 : v > 127 ? 127 : v;
+);
+
+@slider
+slider1 = clamp127(slider1);
+slider2 = clamp127(slider2);
+slider3 = clamp127(slider3);
+slider4 = clamp127(slider4);
+slider5 = clamp127(slider5);
+slider6 = clamp127(slider6);
+slider7 = clamp127(slider7);
+slider8 = clamp127(slider8);
+
+slider9  = floor(clamp127(slider9));
+slider10 = floor(clamp127(slider10));
+slider11 = floor(clamp127(slider11));
+slider12 = floor(clamp127(slider12));
+slider13 = floor(clamp127(slider13));
+slider14 = floor(clamp127(slider14));
+slider15 = floor(clamp127(slider15));
+slider16 = floor(clamp127(slider16));
+slider18 < 0.1 ? slider18 = 0.1;
+
+@block
+while (
+	midirecv(offset, msg1, msg23) ? (
+		status = msg1 & $xF0;
+		ccnum = msg23 & $x7F;
+		ccval = (msg23 / 256) & $x7F;
+
+		status == $xB0 ? (
+			i = 0;
+			while (i < 8)
+			(
+				target_cc = slider(9 + i);
+
+				ccnum == target_cc ? (
+					mode = slider17;
+					factor = slider18;
+
+					mode < 0.5 ? (
+						newval = ccval;
+					) : (
+						delta = ccval < 64 ? -1 : 1;
+						delta *= factor;
+						newval = slider(1 + i) + delta;
+					);
+
+					slider(1 + i) = clamp127(newval);
+				);
+
+				i += 1;
+			);
+		);
+
+		midisend(offset, msg1, msg23);
+		1;
+	);
+);
