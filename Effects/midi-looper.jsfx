@@ -73,6 +73,10 @@ loop(NUM_SLOTS,
 // Request one-shot feedback refresh after each @init (load + transport events)
 FEEDBACK_REFRESH_PENDING = 1;
 
+// UI redraw throttling (render every Nth @gfx call)
+UI_GFX_SKIP   = 3;
+UI_GFX_COUNT  = 0;
+
 // ─── Helper functions ──────────────────────────────────────────────────────────
 
 // Next quantized boundary based on slider2 (quarter-note units)
@@ -443,119 +447,157 @@ loop(NUM_SLOTS,
 
 // ════════════════════════════════════════════════════════════════════════════════
 @gfx 620 200
+UI_GFX_COUNT += 1;
+UI_GFX_COUNT >= UI_GFX_SKIP ? (
+  UI_GFX_COUNT = 0;
 
-gfx_setfont(1, "Arial", 14);
-sw = gfx_w / NUM_SLOTS;           // slot column width
-sh = gfx_h - 28;                  // leave room for legend bar
+  gfx_setfont(1, "Arial", 14);
+  sw = gfx_w / NUM_SLOTS;           // slot column width
+  sh = gfx_h - 28;                  // leave room for legend bar
 
-i = 0;
-loop(NUM_SLOTS,
-  st = MEM_STATE[i];
-  sx = i * sw;
+  i = 0;
+  loop(NUM_SLOTS,
+    st = MEM_STATE[i];
+    sx = i * sw;
 
-  // ── Slot background colour ──
-  st == STATE_EMPTY ? (
-    gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15;
-  ) :
-  (st == STATE_REC_ARMED || st == STATE_STOP_REC_ARMED) ? (
-    gfx_r = 0.55; gfx_g = 0.30; gfx_b = 0.05;
-  ) :
-  st == STATE_RECORDING ? (
-    gfx_r = 0.80; gfx_g = 0.10; gfx_b = 0.10;
-  ) :
-  (st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
-    gfx_r = 0.10; gfx_g = 0.45; gfx_b = 0.65;
-  ) :
-  st == STATE_OVERDUBBING ? (
-    gfx_r = 0.15; gfx_g = 0.75; gfx_b = 0.85;
-  ) :
-  (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED) ? (
-    gfx_r = 0.10; gfx_g = 0.55; gfx_b = 0.10;
-  ) :
-  st == STATE_STOPPED ? (
-    gfx_r = 0.25; gfx_g = 0.25; gfx_b = 0.45;
-  );
+    // ── Slot background colour ──
+    st == STATE_EMPTY ? (
+      gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15;
+    ) :
+    (st == STATE_REC_ARMED || st == STATE_STOP_REC_ARMED) ? (
+      gfx_r = 0.55; gfx_g = 0.30; gfx_b = 0.05;
+    ) :
+    st == STATE_RECORDING ? (
+      gfx_r = 0.80; gfx_g = 0.10; gfx_b = 0.10;
+    ) :
+    (st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
+      gfx_r = 0.10; gfx_g = 0.45; gfx_b = 0.65;
+    ) :
+    st == STATE_OVERDUBBING ? (
+      gfx_r = 0.15; gfx_g = 0.75; gfx_b = 0.85;
+    ) :
+    (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED) ? (
+      gfx_r = 0.10; gfx_g = 0.55; gfx_b = 0.10;
+    ) :
+    st == STATE_STOPPED ? (
+      gfx_r = 0.25; gfx_g = 0.25; gfx_b = 0.45;
+    );
 
-  gfx_a = 1;
-  gfx_rect(sx + 2, 2, sw - 4, sh - 4);
+    gfx_a = 1;
+    gfx_rect(sx + 2, 2, sw - 4, sh - 4);
 
-  // ── Text ──
-  gfx_r = 1; gfx_g = 1; gfx_b = 1;
+    // ── Text ──
+    gfx_r = 1; gfx_g = 1; gfx_b = 1;
 
-  // Slot number
-  gfx_x = sx + sw * 0.5 - 4;
-  gfx_y = 8;
-  gfx_drawnumber(i + 1, 0);
+    // Slot number
+    gfx_x = sx + sw * 0.5 - 4;
+    gfx_y = 8;
+    gfx_drawnumber(i + 1, 0);
 
-  // State label
-  gfx_x = sx + 6;
-  gfx_y = 32;
-  st == STATE_EMPTY           ? gfx_drawstr("Empty")  :
-  st == STATE_REC_ARMED       ? gfx_drawstr("Armed")  :
-  st == STATE_RECORDING       ? gfx_drawstr("REC")    :
-  st == STATE_STOP_REC_ARMED  ? gfx_drawstr("End..")  :
-  st == STATE_OD_ARMED        ? gfx_drawstr("ODArm")  :
-  st == STATE_OVERDUBBING     ? gfx_drawstr("ODUB")   :
-  st == STATE_STOP_OD_ARMED   ? gfx_drawstr("ODEnd")  :
-  st == STATE_PLAYING         ? gfx_drawstr("PLAY")   :
-  st == STATE_PLAY_ARMED      ? gfx_drawstr("Arm>")   :
-  st == STATE_STOP_PLAY_ARMED ? gfx_drawstr("Stop..") :
-  st == STATE_STOPPED         ? gfx_drawstr("Ready");
-
-  // Loop length
-  MEM_LOOP_LEN[i] > 0 ? (
+    // State label
     gfx_x = sx + 6;
-    gfx_y = 54;
-    gfx_drawnumber(MEM_LOOP_LEN[i], 1);
-    gfx_drawstr(" beats");
+    gfx_y = 32;
+    st == STATE_EMPTY           ? gfx_drawstr("Empty")  :
+    st == STATE_REC_ARMED       ? gfx_drawstr("Armed")  :
+    st == STATE_RECORDING       ? gfx_drawstr("REC")    :
+    st == STATE_STOP_REC_ARMED  ? gfx_drawstr("End..")  :
+    st == STATE_OD_ARMED        ? gfx_drawstr("ODArm")  :
+    st == STATE_OVERDUBBING     ? gfx_drawstr("ODUB")   :
+    st == STATE_STOP_OD_ARMED   ? gfx_drawstr("ODEnd")  :
+    st == STATE_PLAYING         ? gfx_drawstr("PLAY")   :
+    st == STATE_PLAY_ARMED      ? gfx_drawstr("Arm>")   :
+    st == STATE_STOP_PLAY_ARMED ? gfx_drawstr("Stop..") :
+    st == STATE_STOPPED         ? gfx_drawstr("Ready");
+
+    // Loop length
+    MEM_LOOP_LEN[i] > 0 ? (
+      gfx_x = sx + 6;
+      gfx_y = 54;
+      gfx_drawnumber(MEM_LOOP_LEN[i], 1);
+      gfx_drawstr(" beats");
+    );
+
+    // Event count
+    MEM_EVT_COUNT[i] > 0 ? (
+      gfx_x = sx + 6;
+      gfx_y = 74;
+      gfx_drawnumber(MEM_EVT_COUNT[i], 0);
+      gfx_drawstr(" evts");
+    );
+
+    // Note preview (rough piano-roll): x=time in loop, y=pitch
+    pv_x = sx + 6;
+    pv_y = 92;
+    pv_w = sw - 12;
+    pv_h = 46;
+
+    gfx_r = 0.06; gfx_g = 0.06; gfx_b = 0.06; gfx_a = 0.85;
+    gfx_rect(pv_x, pv_y, pv_w, pv_h);
+
+    ecv = MEM_EVT_COUNT[i];
+    llv = MEM_LOOP_LEN[i];
+    ecv > 0 && llv > 0 ? (
+      j = 0;
+      loop(ecv,
+        addr = evt_addr(i, j);
+        es   = addr[1] & 0xF0;
+        en   = addr[2];
+        ev   = addr[3];
+
+        (es == 0x90 && ev > 0) ? (
+          px = pv_x + (addr[0] / llv) * (pv_w - 2);
+          py = pv_y + (1 - en / 127) * (pv_h - 2);
+
+          px = min(max(px, pv_x), pv_x + pv_w - 2);
+          py = min(max(py, pv_y), pv_y + pv_h - 2);
+
+          gfx_r = 0.90; gfx_g = 0.95; gfx_b = 0.30; gfx_a = 0.95;
+          gfx_rect(px, py, 2, 2);
+        );
+
+        j += 1;
+      );
+    );
+
+    // Playback progress bar
+    (st == STATE_PLAYING || st == STATE_OVERDUBBING) && MEM_LOOP_LEN[i] > 0 ? (
+      elapsed_pb = beat_position - MEM_PLAY_START[i];
+      lp_pb = elapsed_pb - floor(elapsed_pb / MEM_LOOP_LEN[i]) * MEM_LOOP_LEN[i];
+      pct = lp_pb / MEM_LOOP_LEN[i];
+      gfx_r = 0.3; gfx_g = 1.0; gfx_b = 0.3; gfx_a = 0.6;
+      gfx_rect(sx + 4, sh - 18, (sw - 8) * pct, 12);
+    );
+
+    i += 1;
   );
 
-  // Event count
-  MEM_EVT_COUNT[i] > 0 ? (
-    gfx_x = sx + 6;
-    gfx_y = 74;
-    gfx_drawnumber(MEM_EVT_COUNT[i], 0);
-    gfx_drawstr(" evts");
+  // ── Legend bar ──
+  gfx_r = 0.55; gfx_g = 0.55; gfx_b = 0.55; gfx_a = 1;
+  gfx_x = 4;
+  gfx_y = sh + 6;
+  gfx_drawstr("Trig:");
+  gfx_drawnumber(slider3, 0);
+  gfx_drawstr("-");
+  gfx_drawnumber(slider3 + 7, 0);
+  gfx_drawstr(" | ODub:");
+  gfx_drawnumber(slider4, 0);
+  gfx_drawstr("-");
+  gfx_drawnumber(slider4 + 7, 0);
+  gfx_drawstr(" | Clr:");
+  gfx_drawnumber(slider5, 0);
+  gfx_drawstr("-");
+  gfx_drawnumber(slider5 + 7, 0);
+  gfx_drawstr(" | Ch:");
+  gfx_drawnumber(slider1, 0);
+  gfx_drawstr(" | Q:");
+  gfx_drawnumber(slider2, 1);
+  gfx_drawstr(" qn | NQ:");
+  slider6 > 0 ? (
+    gfx_drawnumber(slider6, 4);
+    gfx_drawstr("b");
+  ) : (
+    gfx_drawstr("Off");
   );
-
-  // Playback progress bar
-  (st == STATE_PLAYING || st == STATE_OVERDUBBING) && MEM_LOOP_LEN[i] > 0 ? (
-    elapsed_pb = beat_position - MEM_PLAY_START[i];
-    lp_pb = elapsed_pb - floor(elapsed_pb / MEM_LOOP_LEN[i]) * MEM_LOOP_LEN[i];
-    pct = lp_pb / MEM_LOOP_LEN[i];
-    gfx_r = 0.3; gfx_g = 1.0; gfx_b = 0.3; gfx_a = 0.6;
-    gfx_rect(sx + 4, sh - 18, (sw - 8) * pct, 12);
-  );
-
-  i += 1;
-);
-
-// ── Legend bar ──
-gfx_r = 0.55; gfx_g = 0.55; gfx_b = 0.55; gfx_a = 1;
-gfx_x = 4;
-gfx_y = sh + 6;
-gfx_drawstr("Trig:");
-gfx_drawnumber(slider3, 0);
-gfx_drawstr("-");
-gfx_drawnumber(slider3 + 7, 0);
-gfx_drawstr(" | ODub:");
-gfx_drawnumber(slider4, 0);
-gfx_drawstr("-");
-gfx_drawnumber(slider4 + 7, 0);
-gfx_drawstr(" | Clr:");
-gfx_drawnumber(slider5, 0);
-gfx_drawstr("-");
-gfx_drawnumber(slider5 + 7, 0);
-gfx_drawstr(" | Ch:");
-gfx_drawnumber(slider1, 0);
-gfx_drawstr(" | Q:");
-gfx_drawnumber(slider2, 1);
-gfx_drawstr(" qn | NQ:");
-slider6 > 0 ? (
-  gfx_drawnumber(slider6, 4);
-  gfx_drawstr("b");
-) : (
-  gfx_drawstr("Off");
 );
 
 // ════════════════════════════════════════════════════════════════════════════════
