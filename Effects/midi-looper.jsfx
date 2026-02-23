@@ -70,6 +70,9 @@ loop(NUM_SLOTS,
   i += 1;
 );
 
+// Request one-shot feedback refresh after each @init (load + transport events)
+FEEDBACK_REFRESH_PENDING = 1;
+
 // ─── Helper functions ──────────────────────────────────────────────────────────
 
 // Next quantized boundary based on slider2 (quarter-note units)
@@ -152,6 +155,22 @@ function finalize_overdub(slot) local(n base ec addr ll stop_off) (
   MEM_EVT_COUNT[slot] = ec;
 );
 
+// Emit trigger-note feedback for a slot on the control channel:
+// note-on if slot has content, note-off if it doesn't.
+function emit_slot_content_feedback(slot, moffs) local(note ch status_on status_off has_content) (
+  note = slider3 + slot;
+  ch   = slider1 - 1;
+  status_on  = 0x90 | ch;
+  status_off = 0x80 | ch;
+
+  has_content = (MEM_EVT_COUNT[slot] > 0 || MEM_LOOP_LEN[slot] > 0);
+  has_content ? (
+    midisend(moffs, status_on, note, 127);
+  ) : (
+    midisend(moffs, status_off, note, 0);
+  );
+);
+
 // ════════════════════════════════════════════════════════════════════════════════
 @block
 
@@ -159,6 +178,16 @@ function finalize_overdub(slot) local(n base ec addr ll stop_off) (
 bps       = tempo / (60 * srate);        // beats per sample
 blk_beats = samplesblock * bps;          // beats in this block
 blk_end   = beat_position + blk_beats;
+
+// ─── One-shot feedback refresh (all slots) ────────────────────────────────────
+FEEDBACK_REFRESH_PENDING ? (
+  i = 0;
+  loop(NUM_SLOTS,
+    emit_slot_content_feedback(i, 0);
+    i += 1;
+  );
+  FEEDBACK_REFRESH_PENDING = 0;
+);
 
 // ─── 1. Armed-state transitions ────────────────────────────────────────────────
 i = 0;
@@ -179,6 +208,7 @@ loop(NUM_SLOTS,
     finalize_recording(i);
     MEM_STATE[i]      = STATE_PLAYING;
     MEM_PLAY_START[i] = tgt;
+    emit_slot_content_feedback(i, 0);
   );
 
   // PLAY_ARMED → PLAYING
@@ -201,6 +231,7 @@ loop(NUM_SLOTS,
   st == STATE_STOP_OD_ARMED && blk_end >= tgt ? (
     finalize_overdub(i);
     MEM_STATE[i] = STATE_PLAYING;
+    emit_slot_content_feedback(i, 0);
   );
 
   // STOP_PLAY_ARMED → STOPPED
@@ -248,6 +279,8 @@ while (midirecv(moffs, m1, m2, m3)) (
       MEM_STATE[sl]  = STATE_STOP_PLAY_ARMED;
       MEM_TARGET[sl] = next_quant_beat();
     );
+
+    emit_slot_content_feedback(sl, moffs);
   );
 
   // ── Overdub note-on (base..base+7) — selected channel only ──
@@ -267,6 +300,8 @@ while (midirecv(moffs, m1, m2, m3)) (
       MEM_STATE[sl]  = STATE_STOP_OD_ARMED;
       MEM_TARGET[sl] = next_quant_beat();
     );
+
+    emit_slot_content_feedback(sl, moffs);
   );
 
   // ── Clear note-on (base..base+7) — selected channel only ──
@@ -282,6 +317,7 @@ while (midirecv(moffs, m1, m2, m3)) (
     MEM_EVT_COUNT[sl] = 0;
     MEM_LOOP_LEN[sl]  = 0;
     memset(MEM_REC_NOTES + sl * 128, 0, 128);
+    emit_slot_content_feedback(sl, moffs);
   );
 
   // ── Eat note-offs that belong to trigger / clear notes (selected channel) ──
