@@ -1,0 +1,7 @@
+SCR 4 0 HSP_REAZULLUA_CLEAN "ReaZulLua: Clean Region" Hemisphera/ReaZulLua/clean.lua
+SCR 4 0 HSP_REAZULLUA_FOCUS "ReaZulLua: Focus Region" Hemisphera/ReaZulLua/focus.lua
+SCR 4 0 HSP_REAZULLUA_INIT "ReaZulLua: Initialize" Hemisphera/ReaZulLua/looper.lua
+ACT 0 0 "HSP_REAZULLUA_PLAY" "ReaZulLua: Play" _HSP_REAZULLUA_INIT 1007
+KEY 13 32814 _HSP_REAZULLUA_CLEAN 0
+KEY 25 123 _HSP_REAZULLUA_FOCUS 0
+KEY 1 123 _HSP_REAZULLUA_PLAY 0
