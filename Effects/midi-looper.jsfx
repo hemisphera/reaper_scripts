@@ -2,6 +2,14 @@ desc:MIDI Looper (8 Slots)
 // Trigger (record/play):  notes 100-107 on selected channel (slot 1-8)
 // Clear slot:             notes 90-97   on selected channel (slot 1-8)
 // Overdub:                notes 110-117 on selected channel (slot 1-8)
+// Orchestrator sync / ID in (selected channel):
+//   note 99, velocity 10..17 => assign instance ID (1..8) and re-emit all slot states
+//   note 99, velocity 18      => disconnect this instance (no feedback while disconnected)
+//   note 99, velocity >0      => full state re-emit (if connected)
+// Feedback out (self-contained, selected channel):
+//   note = (instance_id * 10) + slot_index   where slot_index is 0..7
+//   example: instance 1 => notes 10..17, instance 2 => 20..27, ..., instance 8 => 80..87
+//   velocity/state: 0=empty, 1=contained, 2=playing, 3=recording
 //
 // Behaviour:
 //   Empty  slot + trigger → start recording (quantised to next quarter note)
@@ -73,6 +81,10 @@ loop(NUM_SLOTS,
 
 // Request one-shot feedback refresh after each @init (load + transport events)
 FEEDBACK_REFRESH_PENDING = 1;
+
+// Instance identity for orchestrator integration:
+// 10..17 = assigned IDs 1..8, 18 = disconnected, 0 = not assigned yet.
+INSTANCE_ID_MIDI = max(INSTANCE_ID_MIDI, 0);
 
 // UI redraw throttling (render every Nth @gfx call)
 UI_GFX_SKIP   = 3;
@@ -160,19 +172,44 @@ function finalize_overdub(slot) local(n base ec addr ll stop_off) (
   MEM_EVT_COUNT[slot] = ec;
 );
 
-// Emit trigger-note feedback for a slot on the control channel:
-// note-on if slot has content, note-off if it doesn't.
-function emit_slot_content_feedback(slot, moffs) local(note ch status_on status_off has_content) (
-  note = slider3 + slot;
+function instance_connected() (
+  INSTANCE_ID_MIDI >= 10 && INSTANCE_ID_MIDI <= 17;
+);
+
+// Emit self-contained slot-state feedback for orchestrator.
+// note encodes instance+slot, velocity encodes state 0..3.
+function emit_slot_state_feedback(slot, moffs) local(note ch status_on st has_content v inst) (
+  instance_connected() ? (
+    inst = INSTANCE_ID_MIDI - 9; // 1..8
+    note = inst * 10 + slot;
   ch   = slider1 - 1;
   status_on  = 0x90 | ch;
-  status_off = 0x80 | ch;
+  st = MEM_STATE[slot];
 
-  has_content = (MEM_EVT_COUNT[slot] > 0 || MEM_LOOP_LEN[slot] > 0);
-  has_content ? (
-    midisend(moffs, status_on, note, 127);
-  ) : (
-    midisend(moffs, status_off, note, 0);
+    has_content = (MEM_EVT_COUNT[slot] > 0 || MEM_LOOP_LEN[slot] > 0);
+    v = 0;
+
+    st == STATE_EMPTY && !has_content ? (
+      v = 0;
+    ) :
+    (st == STATE_REC_ARMED || st == STATE_RECORDING || st == STATE_STOP_REC_ARMED || st == STATE_OVERDUBBING) ? (
+      v = 3;
+    ) :
+    (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED || st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
+      v = 2;
+    ) : (
+      v = 1;
+    );
+
+    midisend(moffs, status_on, note, v);
+  );
+);
+
+function emit_all_slot_state_feedback(moffs) local(i) (
+  i = 0;
+  loop(NUM_SLOTS,
+    emit_slot_state_feedback(i, moffs);
+    i += 1;
   );
 );
 
@@ -186,11 +223,7 @@ blk_end   = beat_position + blk_beats;
 
 // ─── One-shot feedback refresh (all slots) ────────────────────────────────────
 FEEDBACK_REFRESH_PENDING ? (
-  i = 0;
-  loop(NUM_SLOTS,
-    emit_slot_content_feedback(i, 0);
-    i += 1;
-  );
+  emit_all_slot_state_feedback(0);
   FEEDBACK_REFRESH_PENDING = 0;
 );
 
@@ -198,6 +231,7 @@ FEEDBACK_REFRESH_PENDING ? (
 i = 0;
 loop(NUM_SLOTS,
   st  = MEM_STATE[i];
+  prev_st = st;
   tgt = MEM_TARGET[i];
 
   // REC_ARMED → RECORDING
@@ -213,7 +247,6 @@ loop(NUM_SLOTS,
     finalize_recording(i);
     MEM_STATE[i]      = STATE_PLAYING;
     MEM_PLAY_START[i] = tgt;
-    emit_slot_content_feedback(i, 0);
   );
 
   // PLAY_ARMED → PLAYING
@@ -236,7 +269,6 @@ loop(NUM_SLOTS,
   st == STATE_STOP_OD_ARMED && blk_end >= tgt ? (
     finalize_overdub(i);
     MEM_STATE[i] = STATE_PLAYING;
-    emit_slot_content_feedback(i, 0);
   );
 
   // STOP_PLAY_ARMED → STOPPED
@@ -244,6 +276,8 @@ loop(NUM_SLOTS,
     send_all_notes_off(i);
     MEM_STATE[i] = STATE_STOPPED;
   );
+
+  MEM_STATE[i] != prev_st ? emit_slot_state_feedback(i, 0);
 
   i += 1;
 );
@@ -259,13 +293,22 @@ while (midirecv(moffs, m1, m2, m3)) (
   mnote = m2;
   eaten = 0;           // 1 = consumed (not passed through)
 
+  // ── Full feedback refresh trigger + optional instance ID assign (msg 99) ──
+  mst == 0x90 && mch == ctrl_ch && m3 > 0 && mnote == 99 ? (
+    eaten = 1;
+    m3 >= 10 && m3 <= 17 ? INSTANCE_ID_MIDI = m3;
+    m3 == 18 ? INSTANCE_ID_MIDI = 18;
+    emit_all_slot_state_feedback(moffs);
+  );
+
   // ── Trigger note-on (base..base+7) — selected channel only ──
   mst == 0x90 && mch == ctrl_ch && m3 > 0
     && mnote >= trig_base
     && mnote <  trig_base + NUM_SLOTS
   ? (
     sl = mnote - trig_base;
-    ss = MEM_STATE[sl];
+    prev_ss = MEM_STATE[sl];
+    ss = prev_ss;
     eaten = 1;
 
     ss == STATE_EMPTY ? (
@@ -285,7 +328,7 @@ while (midirecv(moffs, m1, m2, m3)) (
       MEM_TARGET[sl] = next_quant_beat();
     );
 
-    emit_slot_content_feedback(sl, moffs);
+    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
   );
 
   // ── Overdub note-on (base..base+7) — selected channel only ──
@@ -294,7 +337,8 @@ while (midirecv(moffs, m1, m2, m3)) (
     && mnote <  od_base + NUM_SLOTS
   ? (
     sl = mnote - od_base;
-    ss = MEM_STATE[sl];
+    prev_ss = MEM_STATE[sl];
+    ss = prev_ss;
     eaten = 1;
 
     ss == STATE_PLAYING && MEM_LOOP_LEN[sl] > 0 ? (
@@ -306,7 +350,7 @@ while (midirecv(moffs, m1, m2, m3)) (
       MEM_TARGET[sl] = next_quant_beat();
     );
 
-    emit_slot_content_feedback(sl, moffs);
+    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
   );
 
   // ── Clear note-on (base..base+7) — selected channel only ──
@@ -315,6 +359,7 @@ while (midirecv(moffs, m1, m2, m3)) (
     && mnote <  clr_base + NUM_SLOTS
   ? (
     sl    = mnote - clr_base;
+    prev_ss = MEM_STATE[sl];
     eaten = 1;
 
     send_all_notes_off(sl);
@@ -322,11 +367,12 @@ while (midirecv(moffs, m1, m2, m3)) (
     MEM_EVT_COUNT[sl] = 0;
     MEM_LOOP_LEN[sl]  = 0;
     memset(MEM_REC_NOTES + sl * 128, 0, 128);
-    emit_slot_content_feedback(sl, moffs);
+    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
   );
 
   // ── Eat note-offs that belong to trigger / clear notes (selected channel) ──
   !eaten && mch == ctrl_ch && (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
+    mnote == 99 ? eaten = 1;
     (mnote >= trig_base && mnote < trig_base + NUM_SLOTS) ? eaten = 1;
     (mnote >= clr_base  && mnote < clr_base  + NUM_SLOTS) ? eaten = 1;
     (mnote >= od_base   && mnote < od_base   + NUM_SLOTS) ? eaten = 1;

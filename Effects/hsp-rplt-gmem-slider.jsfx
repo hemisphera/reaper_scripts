@@ -1,0 +1,13 @@
+desc:HSP RPLT gmem slider writer
+
+slider1:0<0,1,0.001>Value
+
+@init
+gmem_attach("HSP_RPLT");
+gmem[0]=slider1;
+
+@slider
+gmem[0]=slider1;
+
+@block
+gmem[0]=slider1;
