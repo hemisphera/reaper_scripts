@@ -1,34 +1,26 @@
 desc:MIDI Looper (8 Slots)
-// Trigger (record/play):  notes 100-107 on selected channel (slot 1-8)
-// Clear slot:             notes 90-97   on selected channel (slot 1-8)
-// Overdub:                notes 110-117 on selected channel (slot 1-8)
-// Orchestrator sync / ID in (selected channel):
-//   note 99, velocity 10..17 => assign instance ID (1..8) and re-emit all slot states
-//   note 99, velocity 18      => disconnect this instance (no feedback while disconnected)
-//   note 99, velocity >0      => full state re-emit (if connected)
-// Feedback out (self-contained, selected channel):
-//   note = (instance_id * 10) + slot_index   where slot_index is 0..7
-//   example: instance 1 => notes 10..17, instance 2 => 20..27, ..., instance 8 => 80..87
-//   velocity/state: 0=empty, 1=contained, 2=playing, 3=recording
+// Slot control + feedback use gmem instead of MIDI protocol.
+// options:gmem namespace: HSP_RPLT
 //
-// Behaviour:
-//   Empty  slot + trigger → start recording (quantised to next quarter note)
-//   Recording slot + trigger → stop recording, begin looped playback
-//   Playing  slot + trigger → stop playback
-//   Stopped  slot + trigger → resume looped playback
-//   Playing  slot + overdub → overdub on/off (quantised to next quarter note)
-//   Any      slot + clear  → erase contents, silence active notes
+// gmem index 0: Heartbeat. When this value changes, the orchestrator has requested a reindex with a full-update of all instances.
+// Instance ID is selected by slider1 (Track Number).
 //
-// All record/play transitions are quantised to the selected quarter-note length.
-// Recorded notes can also be quantised (default: 1/16).
+// Each instance then gets a 20-index private state memory block:
+//   base = instance_id * 20
+//   base+0..7         Output: The state of each recording slot: 0 = empty, 1 = not-empty, 2 = playing 3 = recording
+//   base+8..15        Input: The orchestrator writes slot commands here. Any non-zero value means "pending command".
+//                     Command mapping after rounding/clamping: 1 = trigger (play if not-empty, record if empty), 2 = overdub, 3 = clear
+//                     The FX executes the command and always resets this cell back to 0 (acknowledged/done).
+//   base+16           Input: The orchestrator will send instance-wide commands here:
+//                     Any non-zero value = full-update (this instance updates all slot states), then resets to 0 as ACK
+//   base+17           Output: Instance sets this to 1 when it exists. Orchestrator will initialize this to 0 in order to find out who's 
+//                     there and who's not.
+//
+// When a full-update is requested, this instance immediately writes all slot states.
 
-slider1:7<1,16,1>Control Channel
-slider2:1<0.5,4,0.5>Quantization (quarter notes)
-slider3:100<0,120,1>Trigger Base Note
-slider4:110<0,120,1>Overdub Base Note
-slider5:90<0,120,1>Clear Base Note
-slider6:0.25<0,1,0.0625>Record Note Quantize (beats, 0=Off)
-slider7:1<0,1,1{Off,On}>Show Note Preview
+options:gmem=HSP_RPLT
+
+slider1:1<1,16,1>Track Number
 
 @init
 
@@ -55,10 +47,6 @@ NUM_SLOTS             = 8;
 MAX_EVENTS            = 4096;
 EVENT_SIZE            = 4;
 
-TRIGGER_NOTE_BASE     = 100;
-CLEAR_NOTE_BASE       = 90;
-OVERDUB_NOTE_BASE     = 110;
-
 MEM_STATE       = 0;
 MEM_EVT_COUNT   = 16;
 MEM_LOOP_LEN    = 32;
@@ -68,6 +56,22 @@ MEM_TARGET      = 80;
 MEM_PLAY_NOTES  = 128;
 MEM_REC_NOTES   = 1200;
 MEM_EVENTS      = 2500;
+
+GMEM_TOTAL_CELLS       = 1048576;
+GMEM_GLOBAL_HEARTBEAT  = 0;
+GMEM_GLOBAL_IDPROVIDER = 1;
+GMEM_INST_STRIDE       = 20;
+GMEM_INSTANCE_BASE_MIN = 20;
+GMEM_MAX_INSTANCES     = floor((GMEM_TOTAL_CELLS - GMEM_INSTANCE_BASE_MIN) / GMEM_INST_STRIDE);
+GMEM_OFF_STATE         = 0;
+GMEM_OFF_RAWSTATE      = 0;
+GMEM_OFF_CMD           = 8;
+GMEM_OFF_INSTANCE_CMD  = 16;
+GMEM_OFF_INSTANCE_EXISTS = 17;
+
+INSTANCE_ID          = max(INSTANCE_ID, 0);
+INSTANCE_BASE        = max(INSTANCE_BASE, 0);
+LAST_GMEM_HEARTBEAT  = max(LAST_GMEM_HEARTBEAT, -1);
 
 // Clear slot data only on first load (memory is 0 at load time).
 // On subsequent @init calls (transport events) memory is preserved because
@@ -82,14 +86,6 @@ loop(NUM_SLOTS,
 // Request one-shot feedback refresh after each @init (load + transport events)
 FEEDBACK_REFRESH_PENDING = 1;
 
-// Instance identity for orchestrator integration:
-// 10..17 = assigned IDs 1..8, 18 = disconnected, 0 = not assigned yet.
-INSTANCE_ID_MIDI = max(INSTANCE_ID_MIDI, 0);
-
-// UI redraw throttling (render every Nth @gfx call)
-UI_GFX_SKIP   = 3;
-UI_GFX_COUNT  = 0;
-
 // ─── Helper functions ──────────────────────────────────────────────────────────
 
 // Next quantized boundary based on slider2 (quarter-note units)
@@ -101,6 +97,44 @@ function next_quant_beat() local(q) (
 // Address of event `idx` in `slot`
 function evt_addr(slot, idx) (
   MEM_EVENTS + slot * (MAX_EVENTS * EVENT_SIZE) + idx * EVENT_SIZE;
+);
+
+function gmem_instance_base() (
+  INSTANCE_BASE;
+);
+
+function clear_instance_block(base) local(i) (
+  base > 0 ? (
+    i = 0;
+    loop(GMEM_INST_STRIDE,
+      gmem[base + i] = 0;
+      i += 1;
+    );
+  );
+);
+
+function apply_track_number(track_num) local(assigned i prev_base new_base) (
+  assigned = floor(max(track_num, 1));
+  assigned = min(assigned, 16);
+  GMEM_MAX_INSTANCES > 0 ? assigned = min(assigned, GMEM_MAX_INSTANCES);
+
+  prev_base = INSTANCE_BASE;
+
+  slider1 = assigned;
+  INSTANCE_ID   = assigned;
+  new_base = INSTANCE_ID * GMEM_INST_STRIDE;
+  INSTANCE_BASE = new_base;
+  LAST_TRACK_NUMBER = assigned;
+
+  prev_base != new_base ? clear_instance_block(prev_base);
+
+  i = 0;
+  loop(NUM_SLOTS,
+    gmem[INSTANCE_BASE + GMEM_OFF_CMD + i] = 0;
+    i += 1;
+  );
+  gmem[INSTANCE_BASE + GMEM_OFF_INSTANCE_CMD] = 0;
+  gmem[INSTANCE_BASE + GMEM_OFF_INSTANCE_EXISTS] = 1;
 );
 
 // Send note-off for every note currently sounding in a playback slot
@@ -172,46 +206,97 @@ function finalize_overdub(slot) local(n base ec addr ll stop_off) (
   MEM_EVT_COUNT[slot] = ec;
 );
 
-function instance_connected() (
-  INSTANCE_ID_MIDI >= 10 && INSTANCE_ID_MIDI <= 17;
-);
-
-// Emit self-contained slot-state feedback for orchestrator.
-// note encodes instance+slot, velocity encodes state 0..3.
-function emit_slot_state_feedback(slot, moffs) local(note ch status_on st has_content v inst) (
-  instance_connected() ? (
-    inst = INSTANCE_ID_MIDI - 9; // 1..8
-    note = inst * 10 + slot;
-  ch   = slider1 - 1;
-  status_on  = 0x90 | ch;
+function compact_slot_state(slot) local(st has_content v) (
   st = MEM_STATE[slot];
+  has_content = (MEM_EVT_COUNT[slot] > 0 || MEM_LOOP_LEN[slot] > 0);
+  v = 0;
 
-    has_content = (MEM_EVT_COUNT[slot] > 0 || MEM_LOOP_LEN[slot] > 0);
+  st == STATE_EMPTY && !has_content ? (
     v = 0;
-
-    st == STATE_EMPTY && !has_content ? (
-      v = 0;
-    ) :
-    (st == STATE_REC_ARMED || st == STATE_RECORDING || st == STATE_STOP_REC_ARMED || st == STATE_OVERDUBBING) ? (
-      v = 3;
-    ) :
-    (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED || st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
-      v = 2;
-    ) : (
-      v = 1;
-    );
-
-    midisend(moffs, status_on, note, v);
+  ) :
+  (st == STATE_REC_ARMED || st == STATE_RECORDING || st == STATE_STOP_REC_ARMED || st == STATE_OVERDUBBING) ? (
+    v = 3;
+  ) :
+  (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED || st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
+    v = 2;
+  ) : (
+    v = 1;
   );
+
+  v;
 );
 
-function emit_all_slot_state_feedback(moffs) local(i) (
+function write_slot_state_gmem(slot) local(base) (
+  base = gmem_instance_base();
+  gmem[base + GMEM_OFF_STATE + slot]    = compact_slot_state(slot);
+  gmem[base + GMEM_OFF_RAWSTATE + slot] = MEM_STATE[slot];
+);
+
+function write_all_slot_states_gmem() local(i) (
   i = 0;
   loop(NUM_SLOTS,
-    emit_slot_state_feedback(i, moffs);
+    write_slot_state_gmem(i);
     i += 1;
   );
+  gmem[gmem_instance_base() + GMEM_OFF_INSTANCE_EXISTS] = 1;
 );
+
+function handle_slot_command(slot, cmd) local(prev_ss ss) (
+  prev_ss = MEM_STATE[slot];
+  ss = prev_ss;
+
+  cmd == 1 ? ( // trigger
+    ss == STATE_EMPTY ? (
+      MEM_STATE[slot]  = STATE_REC_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    ) :
+    ss == STATE_RECORDING ? (
+      MEM_STATE[slot]  = STATE_STOP_REC_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    ) :
+    ss == STATE_STOPPED ? (
+      MEM_STATE[slot]  = STATE_PLAY_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    ) :
+    ss == STATE_PLAYING ? (
+      MEM_STATE[slot]  = STATE_STOP_PLAY_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    );
+  );
+
+  cmd == 2 ? ( // overdub
+    ss == STATE_PLAYING && MEM_LOOP_LEN[slot] > 0 ? (
+      MEM_STATE[slot]  = STATE_OD_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    ) :
+    ss == STATE_OVERDUBBING ? (
+      MEM_STATE[slot]  = STATE_STOP_OD_ARMED;
+      MEM_TARGET[slot] = next_quant_beat();
+    );
+  );
+
+  cmd == 3 ? ( // clear
+    send_all_notes_off(slot);
+    MEM_STATE[slot]     = STATE_EMPTY;
+    MEM_EVT_COUNT[slot] = 0;
+    MEM_LOOP_LEN[slot]  = 0;
+    memset(MEM_REC_NOTES + slot * 128, 0, 128);
+  );
+
+  MEM_STATE[slot] != prev_ss ? write_slot_state_gmem(slot);
+);
+
+@slider
+new_track_num = floor(max(slider1, 1));
+new_track_num = min(new_track_num, 16);
+GMEM_MAX_INSTANCES > 0 ? new_track_num = min(new_track_num, GMEM_MAX_INSTANCES);
+
+new_track_num != LAST_TRACK_NUMBER ? (
+  apply_track_number(new_track_num);
+  write_all_slot_states_gmem();
+);
+
+FEEDBACK_REFRESH_PENDING = 1;
 
 // ════════════════════════════════════════════════════════════════════════════════
 @block
@@ -221,10 +306,43 @@ bps       = tempo / (60 * srate);        // beats per sample
 blk_beats = samplesblock * bps;          // beats in this block
 blk_end   = beat_position + blk_beats;
 
+// ─── gmem heartbeat sync + reindex ────────────────────────────────────────────
+global_hb = floor(gmem[GMEM_GLOBAL_HEARTBEAT] + 0.5);
+(INSTANCE_ID <= 0 || global_hb != LAST_GMEM_HEARTBEAT) ? (
+  LAST_GMEM_HEARTBEAT = global_hb;
+  apply_track_number(slider1);
+  FEEDBACK_REFRESH_PENDING = 1;
+);
+
+gmbase = gmem_instance_base();
+
 // ─── One-shot feedback refresh (all slots) ────────────────────────────────────
 FEEDBACK_REFRESH_PENDING ? (
-  emit_all_slot_state_feedback(0);
+  write_all_slot_states_gmem();
   FEEDBACK_REFRESH_PENDING = 0;
+);
+
+// ─── instance command polling (non-zero=full-update, then ACK=0) ─────────────
+inst_cmd_addr = gmbase + GMEM_OFF_INSTANCE_CMD;
+inst_cmd = floor(gmem[inst_cmd_addr] + 0.5);
+gmem[inst_cmd_addr] != 0 ? (
+  write_all_slot_states_gmem();
+  gmem[inst_cmd_addr] = 0;
+);
+
+// ─── gmem command polling (non-zero=pending, then ACK=0) ─────────────────────
+i = 0;
+loop(NUM_SLOTS,
+  cmd_addr = gmbase + GMEM_OFF_CMD + i;
+  cmd_raw = gmem[cmd_addr];
+  cmd_raw != 0 ? (
+    cmd = floor(abs(cmd_raw) + 0.5);
+    cmd < 1 ? cmd = 1;
+    cmd > 3 ? cmd = 3;
+    handle_slot_command(i, cmd);
+    gmem[cmd_addr] = 0;
+  );
+  i += 1;
 );
 
 // ─── 1. Armed-state transitions ────────────────────────────────────────────────
@@ -277,7 +395,7 @@ loop(NUM_SLOTS,
     MEM_STATE[i] = STATE_STOPPED;
   );
 
-  MEM_STATE[i] != prev_st ? emit_slot_state_feedback(i, 0);
+  MEM_STATE[i] != prev_st ? write_slot_state_gmem(i);
 
   i += 1;
 );
@@ -285,156 +403,60 @@ loop(NUM_SLOTS,
 // ─── 2. Process incoming MIDI ──────────────────────────────────────────────────
 while (midirecv(moffs, m1, m2, m3)) (
   mst   = m1 & 0xF0;
-  mch   = m1 & 0x0F;
-  ctrl_ch = slider1 - 1; // slider is 1-16, MIDI channel nibble is 0-15
-  trig_base = slider3;
-  od_base   = slider4;
-  clr_base  = slider5;
-  mnote = m2;
-  eaten = 0;           // 1 = consumed (not passed through)
+  midisend(moffs, m1, m2, m3);
 
-  // ── Full feedback refresh trigger + optional instance ID assign (msg 99) ──
-  mst == 0x90 && mch == ctrl_ch && m3 > 0 && mnote == 99 ? (
-    eaten = 1;
-    m3 >= 10 && m3 <= 17 ? INSTANCE_ID_MIDI = m3;
-    m3 == 18 ? INSTANCE_ID_MIDI = 18;
-    emit_all_slot_state_feedback(moffs);
-  );
-
-  // ── Trigger note-on (base..base+7) — selected channel only ──
-  mst == 0x90 && mch == ctrl_ch && m3 > 0
-    && mnote >= trig_base
-    && mnote <  trig_base + NUM_SLOTS
-  ? (
-    sl = mnote - trig_base;
-    prev_ss = MEM_STATE[sl];
-    ss = prev_ss;
-    eaten = 1;
-
-    ss == STATE_EMPTY ? (
-      MEM_STATE[sl]  = STATE_REC_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    ) :
-    ss == STATE_RECORDING ? (
-      MEM_STATE[sl]  = STATE_STOP_REC_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    ) :
-    ss == STATE_STOPPED ? (
-      MEM_STATE[sl]  = STATE_PLAY_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    ) :
-    ss == STATE_PLAYING ? (
-      MEM_STATE[sl]  = STATE_STOP_PLAY_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    );
-
-    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
-  );
-
-  // ── Overdub note-on (base..base+7) — selected channel only ──
-  mst == 0x90 && mch == ctrl_ch && m3 > 0
-    && mnote >= od_base
-    && mnote <  od_base + NUM_SLOTS
-  ? (
-    sl = mnote - od_base;
-    prev_ss = MEM_STATE[sl];
-    ss = prev_ss;
-    eaten = 1;
-
-    ss == STATE_PLAYING && MEM_LOOP_LEN[sl] > 0 ? (
-      MEM_STATE[sl]  = STATE_OD_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    ) :
-    ss == STATE_OVERDUBBING ? (
-      MEM_STATE[sl]  = STATE_STOP_OD_ARMED;
-      MEM_TARGET[sl] = next_quant_beat();
-    );
-
-    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
-  );
-
-  // ── Clear note-on (base..base+7) — selected channel only ──
-  mst == 0x90 && mch == ctrl_ch && m3 > 0
-    && mnote >= clr_base
-    && mnote <  clr_base + NUM_SLOTS
-  ? (
-    sl    = mnote - clr_base;
-    prev_ss = MEM_STATE[sl];
-    eaten = 1;
-
-    send_all_notes_off(sl);
-    MEM_STATE[sl]     = STATE_EMPTY;
-    MEM_EVT_COUNT[sl] = 0;
-    MEM_LOOP_LEN[sl]  = 0;
-    memset(MEM_REC_NOTES + sl * 128, 0, 128);
-    MEM_STATE[sl] != prev_ss ? emit_slot_state_feedback(sl, moffs);
-  );
-
-  // ── Eat note-offs that belong to trigger / clear notes (selected channel) ──
-  !eaten && mch == ctrl_ch && (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
-    mnote == 99 ? eaten = 1;
-    (mnote >= trig_base && mnote < trig_base + NUM_SLOTS) ? eaten = 1;
-    (mnote >= clr_base  && mnote < clr_base  + NUM_SLOTS) ? eaten = 1;
-    (mnote >= od_base   && mnote < od_base   + NUM_SLOTS) ? eaten = 1;
-  );
-
-  // ── Pass through everything else (and record if a slot is active) ──
-  !eaten ? (
-    midisend(moffs, m1, m2, m3);
-
-    // Store into every slot that is currently recording
-    is_note_evt = (mst == 0x80 || mst == 0x90);
-    rec_q = max(slider6, 0);
-    j = 0;
-    loop(NUM_SLOTS,
-      (MEM_STATE[j] == STATE_RECORDING || MEM_STATE[j] == STATE_OVERDUBBING) ? (
-        ec = MEM_EVT_COUNT[j];
-        ec < MAX_EVENTS ? (
-          sbeat = beat_position + moffs * bps;        // sample-accurate beat
-          MEM_STATE[j] == STATE_RECORDING ? (
-            boff = sbeat - MEM_REC_START[j];
+  // Store into every slot that is currently recording
+  is_note_evt = (mst == 0x80 || mst == 0x90);
+  rec_q = max(slider6, 0);
+  j = 0;
+  loop(NUM_SLOTS,
+    (MEM_STATE[j] == STATE_RECORDING || MEM_STATE[j] == STATE_OVERDUBBING) ? (
+      ec = MEM_EVT_COUNT[j];
+      ec < MAX_EVENTS ? (
+        sbeat = beat_position + moffs * bps;        // sample-accurate beat
+        MEM_STATE[j] == STATE_RECORDING ? (
+          boff = sbeat - MEM_REC_START[j];
+        ) : (
+          llj = MEM_LOOP_LEN[j];
+          llj > 0 ? (
+            boff = sbeat - MEM_PLAY_START[j];
+            boff = boff - floor(boff / llj) * llj;
           ) : (
-            llj = MEM_LOOP_LEN[j];
-            llj > 0 ? (
-              boff = sbeat - MEM_PLAY_START[j];
-              boff = boff - floor(boff / llj) * llj;
-            ) : (
-              boff = -1;
-            );
+            boff = -1;
           );
+        );
 
-          // Quantize recorded NOTE event times if enabled (in beats).
-          // 1/16th = 0.25 beats, 1/32nd = 0.125 beats, etc.
-          rec_q > 0 && is_note_evt && boff >= 0 ? (
-            boff = floor(boff / rec_q + 0.5) * rec_q;
+        // Quantize recorded NOTE event times if enabled (in beats).
+        // 1/16th = 0.25 beats, 1/32nd = 0.125 beats, etc.
+        rec_q > 0 && is_note_evt && boff >= 0 ? (
+          boff = floor(boff / rec_q + 0.5) * rec_q;
 
-            MEM_STATE[j] == STATE_OVERDUBBING ? (
-              llj > 0 ? boff = boff - floor(boff / llj) * llj;
-            ) : (
-              boff < 0 ? boff = 0;
-            );
+          MEM_STATE[j] == STATE_OVERDUBBING ? (
+            llj > 0 ? boff = boff - floor(boff / llj) * llj;
+          ) : (
+            boff < 0 ? boff = 0;
           );
+        );
 
-          boff >= 0 ? (
-            addr    = evt_addr(j, ec);
-            addr[0] = boff;
-            addr[1] = m1;
-            addr[2] = m2;
-            addr[3] = m3;
-            MEM_EVT_COUNT[j] = ec + 1;
+        boff >= 0 ? (
+          addr    = evt_addr(j, ec);
+          addr[0] = boff;
+          addr[1] = m1;
+          addr[2] = m2;
+          addr[3] = m3;
+          MEM_EVT_COUNT[j] = ec + 1;
 
-            // Track held notes for finalize_recording
-            mst == 0x90 && m3 > 0 ? (
-              (MEM_REC_NOTES + j * 128)[m2] = 1;
-            );
-            (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
-              (MEM_REC_NOTES + j * 128)[m2] = 0;
-            );
+          // Track held notes for finalize_recording
+          mst == 0x90 && m3 > 0 ? (
+            (MEM_REC_NOTES + j * 128)[m2] = 1;
+          );
+          (mst == 0x80 || (mst == 0x90 && m3 == 0)) ? (
+            (MEM_REC_NOTES + j * 128)[m2] = 0;
           );
         );
       );
-      j += 1;
     );
+    j += 1;
   );
 );
 
@@ -493,114 +515,161 @@ loop(NUM_SLOTS,
 );
 
 // ════════════════════════════════════════════════════════════════════════════════
-@gfx 420 260
-UI_GFX_COUNT += 1;
-UI_GFX_COUNT >= UI_GFX_SKIP ? (
-  UI_GFX_COUNT = 0;
+@gfx 420 310
 
-  gfx_setfont(1, "Arial", 14);
-  cols = 2;
-  rows = 4;
-  gap  = 2;
-  slot_w = (gfx_w - gap * (cols + 1)) / cols;
-  slot_h = (gfx_h - gap * (rows + 1)) / rows;
-  preview_on = slider7 >= 0.5;
+gfx_setfont(1, "Arial", 14);
+gfx_setfont(2, "Arial", 11);
+cols = 2;
+rows = 4;
+gap  = 2;
+slot_w = (gfx_w - gap * (cols + 1)) / cols;
+slot_h = (gfx_h - gap * (rows + 1)) / rows;
+preview_on = slider7 >= 0.5;
 
-  i = 0;
-  loop(NUM_SLOTS,
-    st = MEM_STATE[i];
-    col = i % cols;
-    row = floor(i / cols);
-    sx = gap + col * (slot_w + gap);
-    sy = gap + row * (slot_h + gap);
+i = 0;
+loop(NUM_SLOTS,
+  st = MEM_STATE[i];
+  col = i % cols;
+  row = floor(i / cols);
+  sx = gap + col * (slot_w + gap);
+  sy = gap + row * (slot_h + gap);
 
-    // ── Slot background colour ──
-    st == STATE_EMPTY ? (
-      gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15;
-    ) :
-    (st == STATE_REC_ARMED || st == STATE_STOP_REC_ARMED) ? (
-      gfx_r = 0.55; gfx_g = 0.30; gfx_b = 0.05;
-    ) :
-    st == STATE_RECORDING ? (
-      gfx_r = 0.80; gfx_g = 0.10; gfx_b = 0.10;
-    ) :
-    (st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
-      gfx_r = 0.10; gfx_g = 0.45; gfx_b = 0.65;
-    ) :
-    st == STATE_OVERDUBBING ? (
-      gfx_r = 0.15; gfx_g = 0.75; gfx_b = 0.85;
-    ) :
-    (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED) ? (
-      gfx_r = 0.10; gfx_g = 0.55; gfx_b = 0.10;
-    ) :
-    st == STATE_STOPPED ? (
-      gfx_r = 0.25; gfx_g = 0.25; gfx_b = 0.45;
-    );
+  // ── Slot background colour ──
+  st == STATE_EMPTY ? (
+    gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15;
+  ) :
+  (st == STATE_REC_ARMED || st == STATE_STOP_REC_ARMED) ? (
+    gfx_r = 0.55; gfx_g = 0.30; gfx_b = 0.05;
+  ) :
+  st == STATE_RECORDING ? (
+    gfx_r = 0.80; gfx_g = 0.10; gfx_b = 0.10;
+  ) :
+  (st == STATE_OD_ARMED || st == STATE_STOP_OD_ARMED) ? (
+    gfx_r = 0.10; gfx_g = 0.45; gfx_b = 0.65;
+  ) :
+  st == STATE_OVERDUBBING ? (
+    gfx_r = 0.15; gfx_g = 0.75; gfx_b = 0.85;
+  ) :
+  (st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED) ? (
+    gfx_r = 0.10; gfx_g = 0.55; gfx_b = 0.10;
+  ) :
+  st == STATE_STOPPED ? (
+    gfx_r = 0.25; gfx_g = 0.25; gfx_b = 0.45;
+  );
 
-    gfx_a = 1;
-    gfx_rect(sx, sy, slot_w, slot_h);
+  gfx_a = 1;
+  gfx_rect(sx, sy, slot_w, slot_h);
 
-    // Note preview (full-slot piano-roll): x=time in loop, y=pitch
-    preview_on ? (
-      pv_x = sx + 1;
-      pv_y = sy + 1;
-      pv_w = slot_w - 2;
-      pv_h = slot_h - 2;
+  // Always show cell number in top-left
+  gfx_setfont(2, "Arial", 11);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.9;
+  sprintf(#cell_txt, "%d", i + 1);
+  gfx_x = sx + 4;
+  gfx_y = sy + 3;
+  gfx_drawstr(#cell_txt);
 
-      ecv = MEM_EVT_COUNT[i];
-      llv = MEM_LOOP_LEN[i];
-      ecv > 0 && llv > 0 ? (
-        j = 0;
-        loop(ecv,
-          addr = evt_addr(i, j);
-          es   = addr[1] & 0xF0;
-          en   = addr[2];
-          ev   = addr[3];
+  // Note preview (full-slot piano-roll): x=time in loop, y=pitch
+  preview_on && MEM_EVT_COUNT[i] > 0 ? (
+    pv_x = sx + 1;
+    pv_y = sy + 1;
+    pv_w = slot_w - 2;
+    pv_h = slot_h - 2;
 
-          (es == 0x90 && ev > 0) ? (
-            px = pv_x + (addr[0] / llv) * (pv_w - 2);
-            py = pv_y + (1 - en / 127) * (pv_h - 2);
+    ecv = MEM_EVT_COUNT[i];
+    llv = MEM_LOOP_LEN[i];
+    llv > 0 ? (
+      j = 0;
+      loop(ecv,
+        addr = evt_addr(i, j);
+        es   = addr[1] & 0xF0;
+        en   = addr[2];
+        ev   = addr[3];
 
-            px = min(max(px, pv_x), pv_x + pv_w - 2);
-            py = min(max(py, pv_y), pv_y + pv_h - 2);
+        (es == 0x90 && ev > 0) ? (
+          px = pv_x + (addr[0] / llv) * (pv_w - 2);
+          py = pv_y + (1 - en / 127) * (pv_h - 2);
 
-            gfx_r = 0.90; gfx_g = 0.95; gfx_b = 0.30; gfx_a = 0.95;
-            gfx_rect(px, py, 2, 2);
-          );
+          px = min(max(px, pv_x), pv_x + pv_w - 2);
+          py = min(max(py, pv_y), pv_y + pv_h - 2);
 
-          j += 1;
+          gfx_r = 0.90; gfx_g = 0.95; gfx_b = 0.30; gfx_a = 0.95;
+          gfx_rect(px, py, 2, 2);
         );
+
+        j += 1;
       );
     );
-
-    // Playback progress bar
-    (st == STATE_PLAYING || st == STATE_OVERDUBBING) && MEM_LOOP_LEN[i] > 0 ? (
-      elapsed_pb = beat_position - MEM_PLAY_START[i];
-      lp_pb = elapsed_pb - floor(elapsed_pb / MEM_LOOP_LEN[i]) * MEM_LOOP_LEN[i];
-      pct = lp_pb / MEM_LOOP_LEN[i];
-      gfx_r = min(gfx_r + 0.18, 1.0);
-      gfx_g = min(gfx_g + 0.18, 1.0);
-      gfx_b = min(gfx_b + 0.18, 1.0);
-      gfx_a = 0.55;
-      pb_x = sx;
-      pb_y = sy;
-      pb_w = slot_w;
-      gfx_rect(pb_x, pb_y, pb_w * pct, slot_h);
-    );
-
-    // Centered beat count only
-    MEM_LOOP_LEN[i] > 0 ? (
-      gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.95;
-      sprintf(#beat_txt, "%.1f", MEM_LOOP_LEN[i]);
-      gfx_measurestr(#beat_txt, tw, th);
-      gfx_x = sx + (slot_w - tw) * 0.5;
-      gfx_y = sy + (slot_h - th) * 0.5;
-      gfx_drawstr(#beat_txt);
-    );
-
-    i += 1;
   );
+
+  // Playback progress bar with alpha blending to avoid flickering
+  (st == STATE_PLAYING || st == STATE_OVERDUBBING) && MEM_LOOP_LEN[i] > 0 ? (
+    elapsed_pb = beat_position - MEM_PLAY_START[i];
+    lp_pb = elapsed_pb - floor(elapsed_pb / MEM_LOOP_LEN[i]) * MEM_LOOP_LEN[i];
+    pct = lp_pb / MEM_LOOP_LEN[i];
+    
+    // Use base color + highlight for progress bar
+    st == STATE_PLAYING || st == STATE_PLAY_ARMED || st == STATE_STOP_PLAY_ARMED ? (
+      gfx_r = 0.25; gfx_g = 0.80; gfx_b = 0.25;
+    ) : (
+      gfx_r = 0.30; gfx_g = 0.95; gfx_b = 0.95;
+    );
+    gfx_a = 0.6;
+    pb_x = sx;
+    pb_y = sy;
+    pb_w = slot_w;
+    gfx_rect(pb_x, pb_y, pb_w * pct, slot_h);
+  );
+
+  // Centered beat count during active recording / playback only
+  show_beats = 0;
+  beat_val = 0;
+  st == STATE_RECORDING ? (
+    beat_val = beat_position - MEM_REC_START[i];
+    beat_val < 0 ? beat_val = 0;
+    show_beats = 1;
+  );
+  (st == STATE_PLAYING || st == STATE_OVERDUBBING) && MEM_LOOP_LEN[i] > 0 ? (
+    beat_val = MEM_LOOP_LEN[i];
+    show_beats = 1;
+  );
+
+  show_beats ? (
+    gfx_setfont(1, "Arial", 14);
+    gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.95;
+    sprintf(#beat_txt, "%.1f", beat_val);
+    gfx_measurestr(#beat_txt, tw, th);
+    gfx_x = sx + (slot_w - tw) * 0.5;
+    gfx_y = sy + (slot_h - th) * 0.5;
+    gfx_drawstr(#beat_txt);
+  );
+
+  i += 1;
 );
+
+/*
+// ─── Status row at bottom ──────────────────────────────────────────────────────
+gfx_r = 0.20; gfx_g = 0.20; gfx_b = 0.20; gfx_a = 1;
+status_y = gap + rows * (slot_h + gap);
+gfx_rect(0, status_y, gfx_w, gfx_h - status_y);
+
+gfx_setfont(2, "Arial", 12);
+gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = 0.9;
+
+gmbase_val = gmem_instance_base();
+sprintf(#status_txt, "Instance: %d | gmem base: %d | State: %d %d %d %d %d %d %d %d | Cmd: %d %d %d %d %d %d %d %d |  Inst Cmd: %d",
+  INSTANCE_ID,
+  gmbase_val,
+  gmem[gmbase_val + 0], gmem[gmbase_val + 1], gmem[gmbase_val + 2], gmem[gmbase_val + 3],
+  gmem[gmbase_val + 4], gmem[gmbase_val + 5], gmem[gmbase_val + 6], gmem[gmbase_val + 7],
+  gmem[gmbase_val + 8], gmem[gmbase_val + 9], gmem[gmbase_val + 10], gmem[gmbase_val + 11],
+  gmem[gmbase_val + 12], gmem[gmbase_val + 13], gmem[gmbase_val + 14], gmem[gmbase_val + 15],
+  gmem[gmbase_val + 16]
+);
+
+gfx_x = gap + 4;
+gfx_y = status_y + 4;
+gfx_drawstr(#status_txt);
+*/
 
 // ════════════════════════════════════════════════════════════════════════════════
 @serialize

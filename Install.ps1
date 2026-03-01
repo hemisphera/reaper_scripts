@@ -17,7 +17,7 @@ try {
         $ReaperFolder = "$ReaperResBaseFolder\$($Subfolder.Name)\Hemisphera"
         if (Test-Path $ReaperFolder) {
             Write-Host "Deleting existing folder '$ReaperFolder'"
-            [IO.Directory]::Delete($ReaperFolder)
+            [IO.Directory]::Delete($ReaperFolder, $true)
         }
         Write-Host "Creating link from '$ReaperFolder' to '$($Subfolder.FullName)'"
         New-Item -ItemType SymbolicLink -Path $ReaperFolder -Value $Subfolder.FullName | out-null
