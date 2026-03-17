@@ -1,33 +1,33 @@
 desc:Relativator
 
-slider1:0<0,8,1>Offset Value (Global)
-slider2:0<0,127,1>CC 14 Value
-slider3:0<0,127,1>CC 15 Value
-slider4:0<0,127,1>CC 16 Value
-slider5:0<0,127,1>CC 17 Value
-slider6:0<0,127,1>CC 18 Value
-slider7:0<0,127,1>CC 20 Value
-slider8:0<0,127,1>CC 21 Value
-slider9:0<0,127,1>CC 22 Value
+slider1:0<0,8,1>Multiplier
+slider2:14<0,127,1>Base CC Number
+slider3:0<0,127,1>CC +0 Value
+slider4:0<0,127,1>CC +1 Value
+slider5:0<0,127,1>CC +2 Value
+slider6:0<0,127,1>CC +3 Value
+slider7:0<0,127,1>CC +4 Value
+slider8:0<0,127,1>CC +5 Value
+slider9:0<0,127,1>CC +6 Value
+slider10:0<0,127,1>CC +7 Value
 
 @init
 // Create a persistent array to hold the float values for the 8 CCs
 // We use 8 slots, initialized to 0
-float_values = 0; 
+float_values = 0;
 
 @slider
-// Whenever a slider is changed manually, update our float tracker to match [cite: 3]
 i = 0;
 loop(8,
-  float_values[i] = slider(i + 2);
+  float_values[i] = slider(i + 3);
   i += 1;
 );
 
 @block
 while (midirecv(offset, msg1, msg2, msg3)) (
   status = msg1 & $xF0;
-  (status == $xB0 && msg2 >= 14 && msg2 <= 22) ? (
-    idx = msg2 - 14;
+  (status == $xB0 && msg2 >= slider2 && msg2 <= slider2 + 7) ? (
+    idx = msg2 - slider2;
     val = msg3;
     
     // Calculate offset
@@ -48,8 +48,8 @@ while (midirecv(offset, msg1, msg2, msg3)) (
     
     // Update the slider
     new_int = floor(float_values[idx] + 0.5);
-    slider(idx + 2) = new_int;
-    sliderchange(slider(idx + 2));
+    slider(idx + 3) = new_int;
+    sliderchange(slider(idx + 3));
   ) : (
     midisend(offset, msg1, msg2, msg3);
   );
