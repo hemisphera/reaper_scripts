@@ -3,40 +3,81 @@ desc:Noteholder
 slider1:1<0,1,1{Off,On}>Hold Enable
 
 @init
-held_notes    = 0;   // memory[0..7]:  note numbers
-held_channels = 8;   // memory[8..15]: MIDI channel for each held note
+held_notes    = 0;   // memory[0..7]:  note numbers of held set
+held_channels = 8;   // memory[8..15]: channels of held set
+phys_notes    = 16;  // memory[16..23]: physically pressed note numbers
+phys_channels = 24;  // memory[24..31]: channels of physically pressed notes
 held_count    = 0;
-physical_held = 0;   // physically-pressed keys that are in held_notes
-collecting    = 0;   // 1 = collecting phase, 0 = holding phase
+physical_held = 0;
+collecting    = 0;
+phys_count    = 0;
 prev_enable   = 1;
 needs_release = 0;
 
 @slider
-// When Hold Enable is turned off, mark for release
 slider1 != prev_enable ? (
   prev_enable = slider1;
   slider1 == 0 ? (
+    // Hold turned off: queue a release
     needs_release = 1;
+  ) : (
+    // Hold turned on: seed held set from currently physical notes
+    i = 0;
+    loop(phys_count,
+      held_notes[i]    = phys_notes[i];
+      held_channels[i] = phys_channels[i];
+      i += 1;
+    );
+    held_count    = phys_count;
+    physical_held = phys_count;
+    collecting    = phys_count > 0 ? 1 : 0;
   );
 );
 
 @block
-while (midirecv(offset, msg1, msg2, msg3)) (
-  // Release held notes if slider was turned off
-  needs_release ? (
-    i = 0;
-    loop(held_count,
-      midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
-      i += 1;
-    );
-    held_count    = 0;
-    physical_held = 0;
-    collecting    = 0;
-    needs_release = 0;
+// Release held notes if hold was turned off — runs regardless of incoming MIDI
+needs_release ? (
+  i = 0;
+  loop(held_count,
+    midisend(0, $x80 | held_channels[i], held_notes[i], 0);
+    i += 1;
   );
+  held_count    = 0;
+  physical_held = 0;
+  collecting    = 0;
+  needs_release = 0;
+);
 
+while (midirecv(offset, msg1, msg2, msg3)) (
   status = msg1 & $xF0;
   ch     = msg1 & $x0F;
+
+  // Always track physical key state (used to seed held set on enable)
+  (status == $x90 && msg3 > 0) ? (
+    phys_count < 8 ? (
+      phys_notes[phys_count]    = msg2;
+      phys_channels[phys_count] = ch;
+      phys_count += 1;
+    );
+  ) : (status == $x80 || (status == $x90 && msg3 == 0)) ? (
+    found = 0;
+    i = 0;
+    loop(phys_count,
+      !found ? (
+        phys_notes[i] == msg2 ? (
+          j = i;
+          loop(phys_count - i - 1,
+            phys_notes[j]    = phys_notes[j + 1];
+            phys_channels[j] = phys_channels[j + 1];
+            j += 1;
+          );
+          phys_count -= 1;
+          found = 1;
+        );
+      );
+      i += 1;
+    );
+  );
 
   slider1 == 0 ? (
     midisend(offset, msg1, msg2, msg3);
