@@ -1,0 +1,97 @@
+desc:Noteholder
+
+slider1:1<0,1,1{Off,On}>Hold Enable
+
+@init
+held_notes    = 0;   // memory[0..7]:  note numbers
+held_channels = 8;   // memory[8..15]: MIDI channel for each held note
+held_count    = 0;
+physical_held = 0;   // physically-pressed keys that are in held_notes
+collecting    = 0;   // 1 = collecting phase, 0 = holding phase
+prev_enable   = 1;
+
+@slider
+// When Hold Enable is turned off, release all currently held notes
+slider1 != prev_enable ? (
+  prev_enable = slider1;
+  slider1 == 0 ? (
+    i = 0;
+    loop(held_count,
+      midisend(0, $x80 | held_channels[i], held_notes[i], 0);
+      i += 1;
+    );
+    held_count    = 0;
+    physical_held = 0;
+    collecting    = 0;
+  );
+);
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  ch     = msg1 & $x0F;
+
+  slider1 == 0 ? (
+    midisend(offset, msg1, msg2, msg3);
+  ) : (
+
+  // ---- Note-on (velocity > 0) ----
+  (status == $x90 && msg3 > 0) ? (
+
+    // Entering from holding state: release old notes and start fresh
+    collecting == 0 ? (
+      i = 0;
+      loop(held_count,
+        midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
+        i += 1;
+      );
+      held_count    = 0;
+      physical_held = 0;
+      collecting    = 1;
+    );
+
+    // Skip duplicates
+    already_held = 0;
+    i = 0;
+    loop(held_count,
+      held_notes[i] == msg2 ? (already_held = 1;);
+      i += 1;
+    );
+
+    // Add to held set if room available and not a duplicate
+    held_count < 8 && !already_held ? (
+      held_notes[held_count]    = msg2;
+      held_channels[held_count] = ch;
+      held_count    += 1;
+      physical_held += 1;
+    );
+
+    midisend(offset, msg1, msg2, msg3);
+
+  ) : (status == $x80 || (status == $x90 && msg3 == 0)) ? (
+
+    // ---- Note-off ----
+    in_held = 0;
+    i = 0;
+    loop(held_count,
+      held_notes[i] == msg2 ? (in_held = 1;);
+      i += 1;
+    );
+
+    in_held ? (
+      // Suppress the note-off; track physical release while collecting
+      collecting ? (
+        physical_held = max(physical_held - 1, 0);
+        physical_held == 0 ? (collecting = 0;);
+      );
+    ) : (
+      midisend(offset, msg1, msg2, msg3);
+    );
+
+  ) : (
+    // All other MIDI passes through untouched
+    midisend(offset, msg1, msg2, msg3);
+  );
+
+  ); // end slider1 == 1
+);
