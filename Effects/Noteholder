@@ -9,25 +9,32 @@ held_count    = 0;
 physical_held = 0;   // physically-pressed keys that are in held_notes
 collecting    = 0;   // 1 = collecting phase, 0 = holding phase
 prev_enable   = 1;
+needs_release = 0;
 
 @slider
-// When Hold Enable is turned off, release all currently held notes
+// When Hold Enable is turned off, mark for release
 slider1 != prev_enable ? (
   prev_enable = slider1;
   slider1 == 0 ? (
-    i = 0;
-    loop(held_count,
-      midisend(0, $x80 | held_channels[i], held_notes[i], 0);
-      i += 1;
-    );
-    held_count    = 0;
-    physical_held = 0;
-    collecting    = 0;
+    needs_release = 1;
   );
 );
 
 @block
 while (midirecv(offset, msg1, msg2, msg3)) (
+  // Release held notes if slider was turned off
+  needs_release ? (
+    i = 0;
+    loop(held_count,
+      midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
+      i += 1;
+    );
+    held_count    = 0;
+    physical_held = 0;
+    collecting    = 0;
+    needs_release = 0;
+  );
+
   status = msg1 & $xF0;
   ch     = msg1 & $x0F;
 
