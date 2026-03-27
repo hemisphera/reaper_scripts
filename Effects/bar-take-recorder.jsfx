@@ -1,0 +1,281 @@
+desc:Bar Take Recorder
+version:1.0
+author:hsp
+tags:utility recording
+
+// Records N bars of stereo audio and exports each take as a media item.
+// Uses REAPER's export_buffer_to_project (REAPER 6.05+) to write audio files
+// and insert them into the project at the current edit cursor position.
+//
+// Usage:
+//   1. Set "Bars Per Take" (default 4).
+//   2. Set "Insert On Track" to the destination track number (1-based).
+//   3. Position the edit cursor at the desired recording start point.
+//   4. Press Play — the plugin starts capturing immediately.
+//   5. Every N bars a take is exported and inserted. The edit cursor advances
+//      to the end of the last inserted item so takes are laid out end-to-end.
+//
+// Requirements:  REAPER 6.05+
+//
+// Notes:
+//   - The plugin does NOT need its FX window open (options:gfx_idle ensures
+//     the export code runs in the background).
+//   - Partial takes (stopped mid-bar) are silently discarded.
+//   - If an export is still pending when the next take completes, the next
+//     take is dropped. This should not occur at normal tempos / sample rates.
+//   - Buffer capacity: MAX_FRAMES samples per channel. For very long takes at
+//     high sample rates see the "Buffer limit" warning in the UI.
+
+options:gfx_idle
+options:gfx_hz=30
+options:maxmem=32000000
+
+in_pin:Input L
+in_pin:Input R
+out_pin:Output L
+out_pin:Output R
+
+slider1:sl_bars=4<1,16,1>Bars Per Take
+slider2:sl_track=1<1,64,1>Insert On Track (1-based)
+
+// ── Memory Layout ─────────────────────────────────────────────────────────────
+// Double-buffered, interleaved stereo (L0,R0,L1,R1,...):
+//
+//   Slot range                  Name   Contents
+//   [0 .. MAX_FRAMES*2-1]       BUF1   Take-buffer 1  (interleaved L,R)
+//   [MAX_FRAMES*2 .. *4-1]      BUF2   Take-buffer 2  (interleaved L,R)
+//
+// 2 × 7,000,000 × 2 = 28,000,000 slots  <  32,000,000 (maxmem limit).
+//
+// export_buffer_to_project is called without planar_pitch so REAPER reads
+// interleaved L,R pairs — works with any REAPER >= 6.05.
+
+@init
+
+// ── Constants (re-declared every @init so they survive transport restarts) ────
+
+MAX_FRAMES = 7000000;   // max stereo frames per take (each frame = 2 slots)
+
+BUF1 = 0;
+BUF2 = MAX_FRAMES * 2;
+
+// Cache srate here so @gfx (different thread) always has a valid value.
+my_srate = srate;
+
+// ── Working state (reset every @init) ────────────────────────────────────────
+// (take_counter is NOT reset here — it is preserved by @serialize)
+
+active_buf  = BUF1;   // start of the buffer currently being recorded into
+buf_pos     = 0;      // stereo frames written in the active buffer
+
+target_frames = 0;        // frames that make up N bars (recalculated each block)
+samples_per_bar = 0;      // samples in one bar (for progress display)
+
+export_pending     = 0;   // 1 = a completed take is waiting for @gfx to export
+export_buf         = 0;   // start of the interleaved buffer to export
+export_frame_count = 0;   // stereo frame count to export
+
+is_recording   = 0;
+last_play      = 0;
+
+@slider
+
+bars_to_record = sl_bars;
+target_track   = max(0, sl_track - 1);   // user uses 1-based; API is 0-based
+
+@block
+
+// Recalculate how many samples make up one bar.
+// samples_per_beat = srate × 60 / tempo
+// samples_per_bar  = samples_per_beat × ts_num × (4 / ts_denom)
+//   The factor 4/ts_denom normalises so that, e.g., a 3/8 bar has the same
+//   real-time duration as 3 eighth-notes (half a beat in 4/4 terms).
+tempo > 0 ? (
+  spb             = srate * 60.0 / tempo;
+  samples_per_bar = spb * ts_num * 4.0 / ts_denom;
+  target_frames   = max(1, floor(bars_to_record * samples_per_bar + 0.5));
+);
+
+// Detect transport start / stop.
+is_playing = (play_state == 1) || (play_state == 4) || (play_state == 5);
+
+!last_play && is_playing ? (
+  is_recording = 1;
+  buf_pos      = 0;
+);
+
+last_play && !is_playing ? (
+  is_recording = 0;
+  buf_pos      = 0;   // discard any partial take
+);
+
+last_play = is_playing;
+
+@sample
+
+// Pass audio through unmodified.
+// (spl0 / spl1 are already set by REAPER; no modification needed.)
+
+is_recording && target_frames > 0 ? (
+  buf_pos < MAX_FRAMES ? (
+    idx = buf_pos * 2;
+    active_buf[idx]     = spl0;
+    active_buf[idx + 1] = spl1;
+  );
+  buf_pos += 1;
+
+  buf_pos >= target_frames ? (
+    // ── Take complete ─────────────────────────────────────────────────────
+    !export_pending ? (
+      // Claim the export slot.
+      export_buf         = active_buf;
+      export_frame_count = min(buf_pos, MAX_FRAMES);
+
+      // Swap to the other double-buffer so recording continues without
+      // overwriting the data we just claimed.
+      active_buf = (active_buf == BUF1) ? BUF2 : BUF1;
+
+      export_pending = 1;   // signal @gfx to export
+    );
+    // Always reset write position so the next take starts cleanly.
+    buf_pos = 0;
+  );
+);
+
+@gfx 600 130
+
+// ── Export pending take (runs on UI thread — safe for project operations) ─────
+
+export_pending ? (
+  // export_buffer_to_project(buffer, length_samples, nch, srate, track_index, [flags])
+  //
+  //   buffer is interleaved L,R,L,R... — works with any REAPER >= 6.05.
+  //   flags = 0x10000: move edit cursor to end of inserted item so the next
+  //   take lands immediately after the previous one.
+
+  export_buffer_to_project(
+    export_buf,
+    export_frame_count,
+    2,
+    my_srate,
+    target_track,
+    0x10000
+  );
+
+  take_counter  += 1;
+  export_pending = 0;
+);
+
+// ── Draw UI ───────────────────────────────────────────────────────────────────
+
+// Only draw when the window is actually open (gfx_w > 0).
+gfx_w > 0 ? (
+
+  // Background
+  gfx_set(0.11, 0.11, 0.15, 1);
+  gfx_rect(0, 0, gfx_w, gfx_h);
+
+  // ── Title bar ─────────────────────────────────────────────────────────────
+  gfx_set(0.16, 0.16, 0.22, 1);
+  gfx_rect(0, 0, gfx_w, 26);
+
+  gfx_setfont(1, "Arial", 13, 'b');
+  gfx_set(0.65, 0.65, 0.75, 1);
+  gfx_x = 8; gfx_y = 5;
+  gfx_drawstr("BAR TAKE RECORDER");
+
+  // Transport status pill (top-right)
+  gfx_setfont(1, "Arial", 12);
+  gfx_x = gfx_w - 126; gfx_y = 5;
+  is_recording ? (
+    gfx_set(0.95, 0.28, 0.28, 1);
+    gfx_drawstr("● RECORDING");
+  ) : (
+    gfx_set(0.38, 0.38, 0.48, 1);
+    gfx_drawstr("■  STOPPED");
+  );
+
+  // ── Info row ──────────────────────────────────────────────────────────────
+  gfx_setfont(1, "Arial", 11);
+  gfx_set(0.72, 0.72, 0.58, 1);
+  gfx_x = 8; gfx_y = 32;
+  sprintf(0, "Takes: %d     Bars/Take: %d     %.1f BPM     %d/%d     Track: %d",
+    take_counter, bars_to_record|0, tempo,
+    ts_num|0, ts_denom|0, (target_track + 1)|0);
+  gfx_drawstr(0);
+
+  // ── Progress bar ──────────────────────────────────────────────────────────
+  pb_x = 8;  pb_y = 54;
+  pb_w = gfx_w - 16;  pb_h = 32;
+  progress = (is_recording && target_frames > 0) ?
+              min(buf_pos / target_frames, 1.0) : 0.0;
+
+  // Track background
+  gfx_set(0.18, 0.18, 0.24, 1);
+  gfx_rect(pb_x, pb_y, pb_w, pb_h);
+
+  // Fill
+  is_recording && progress > 0 ? (
+    gfx_set(0.18, 0.58, 0.38, 1);
+    gfx_rect(pb_x, pb_y, floor(pb_w * progress), pb_h);
+  );
+
+  // Bar divider tick marks
+  bars_to_record > 1 && is_recording && samples_per_bar > 0 ? (
+    bi = 1;
+    loop(bars_to_record - 1,
+      tick_x = pb_x + floor(pb_w * bi / bars_to_record);
+      gfx_set(0.55, 0.55, 0.65, 0.35);
+      gfx_rect(tick_x, pb_y, 1, pb_h);
+      bi += 1;
+    );
+  );
+
+  // Outer border
+  gfx_set(0.30, 0.30, 0.40, 1);
+  gfx_rect(pb_x, pb_y, pb_w, 1);
+  gfx_rect(pb_x, pb_y + pb_h - 1, pb_w, 1);
+  gfx_rect(pb_x, pb_y, 1, pb_h);
+  gfx_rect(pb_x + pb_w - 1, pb_y, 1, pb_h);
+
+  // Progress label
+  gfx_setfont(1, "Arial", 11);
+  gfx_set(1.0, 1.0, 1.0, 0.9);
+  is_recording && samples_per_bar > 0 ? (
+    cur_bar = floor(buf_pos / samples_per_bar) + 1;
+    sprintf(0, "Bar %d / %d   (%.0f%%)",
+      min(cur_bar, bars_to_record|0), bars_to_record|0, progress * 100);
+  ) : (
+    sprintf(0, "—");
+  );
+  // Centre the text inside the progress bar
+  gfx_measurestr(0, tw, th);
+  gfx_x = pb_x + (pb_w - tw) / 2;
+  gfx_y = pb_y + (pb_h - th) / 2;
+  gfx_drawstr(0);
+
+  // ── Status line ───────────────────────────────────────────────────────────
+  gfx_setfont(1, "Arial", 10);
+  status_y = pb_y + pb_h + 6;
+
+  // Buffer-limit warning
+  target_frames > MAX_FRAMES ? (
+    gfx_set(1.0, 0.55, 0.15, 1);
+    gfx_x = 8; gfx_y = status_y;
+    sprintf(0, "⚠  Buffer limit: configured take (%.0fs) exceeds %.0fs capacity — recording capped",
+      target_frames / srate,
+      MAX_FRAMES / srate);
+    gfx_drawstr(0);
+  ) : export_pending ? (
+    gfx_set(1.0, 0.80, 0.25, 1);
+    gfx_x = gfx_w - 80; gfx_y = status_y;
+    gfx_drawstr("Exporting…");
+  );
+
+);  // end gfx_w > 0 guard
+
+@serialize
+
+// Preserve the take counter across project saves / reloads.
+// Also prevents @init from zeroing all memory on transport restarts.
+file_var(0, take_counter);
