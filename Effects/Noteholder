@@ -59,7 +59,30 @@ while (midirecv(offset, msg1, msg2, msg3)) (
   (status == $x90 && msg3 > 0 && msg2 == slider2 && ch == (slider3 - 1)) ? (
     is_trigger = 1;
     slider1 = slider1 == 0 ? 1 : 0;
-    sliderchange(slider1);
+    sliderchange(1);   // bitmask 1 = slider1; sliderchange(slider1) is wrong when slider1==0
+    prev_enable = slider1;
+    slider1 == 0 ? (
+      // Toggled OFF: release all held notes immediately
+      i = 0;
+      loop(held_count,
+        midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
+        i += 1;
+      );
+      held_count    = 0;
+      physical_held = 0;
+      collecting    = 0;
+    ) : (
+      // Toggled ON: seed held set from notes physically pressed right now
+      i = 0;
+      loop(phys_count,
+        held_notes[i]    = phys_notes[i];
+        held_channels[i] = phys_channels[i];
+        i += 1;
+      );
+      held_count    = phys_count;
+      physical_held = phys_count;
+      collecting    = phys_count > 0 ? 1 : 0;
+    );
   );
   (status == $x80 || (status == $x90 && msg3 == 0)) && msg2 == slider2 && ch == (slider3 - 1) ? (
     is_trigger = 1;
@@ -159,4 +182,17 @@ while (midirecv(offset, msg1, msg2, msg3)) (
   ); // end slider1 == 1
 
   ); // end !is_trigger
+);
+
+// Release held notes if toggle happened during this block's MIDI processing
+needs_release ? (
+  i = 0;
+  loop(held_count,
+    midisend(0, $x80 | held_channels[i], held_notes[i], 0);
+    i += 1;
+  );
+  held_count    = 0;
+  physical_held = 0;
+  collecting    = 0;
+  needs_release = 0;
 );
