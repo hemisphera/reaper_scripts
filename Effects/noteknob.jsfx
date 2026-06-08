@@ -53,11 +53,11 @@ while (midirecv(offset, msg1, msg2, msg3)) (
   );
 );
 
-while (sample_counter >= trigger_interval) (
-  sample_counter -= trigger_interval;
+sample_counter >= trigger_interval ? (
+  sample_counter = 0;
   
   n = 0;
-  while (n < 128) (
+  loop(128,
     val = held_notes_inc[n];
     val != 0 ? (
       midisend(0, 0xB0 | (slider3 - 1), n, 1);
