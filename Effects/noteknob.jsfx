@@ -6,7 +6,8 @@ slider3:1<1,16,1>Out-Channel
 slider4:100<1,1000,1>Frequency (Hz)
 
 @init
-held_notes = 0;
+held_notes_inc = 0;
+held_notes_dec = 0;
 trigger_interval = srate / slider4;
 sample_counter = 0;
 
@@ -23,27 +24,32 @@ while (midirecv(offset, msg1, msg2, msg3)) (
 
   is_inc = (channel == slider1);
   is_dec = (channel == slider2);
+  handled = 0;
 
   (status == 0x90 && vel > 0) ? (
-    is_inc ? (
-      held_notes[note] = 1;
-    ) : (
-      is_dec ? (
-        held_notes[note] = 2;
-      ) : (
-        midisend(offset, msg1, msg2, msg3);
-      );
+    (is_inc) ? (
+      held_notes_inc[note] = 1;
+      handled = 1
     );
-  ) : (
-    (status == 0x80 || (status == 0x90 && vel == 0)) ? (
-      (is_inc || is_dec) ? (
-        held_notes[note] = 0;
-      ) : (
-        midisend(offset, msg1, msg2, msg3);
-      );
-    ) : (
+    (is_dec) ? (
+      held_notes_dec[note] = 1;
+      handled = 1
+    );
+  );
+    
+  (status == 0x80 || (status == 0x90 && vel == 0)) ? (
+    (is_inc) ? (
+      held_notes_inc[note] = 0;
+      handled = 1
+    );
+    (is_dec) ? (
+      held_notes_dec[note] = 0;
+      handled = 1
+    );
+  );
+
+  (handled == 0) ? (
       midisend(offset, msg1, msg2, msg3);
-    );
   );
 );
 
@@ -52,9 +58,13 @@ sample_counter >= trigger_interval ? (
   
   n = 0;
   loop(128,
-    val = held_notes[n];
+    val = held_notes_inc[n];
     val != 0 ? (
-      midisend(0, 0xB0 | (slider3 - 1), n, (val == 1 ? 1 : 127));
+      midisend(0, 0xB0 | (slider3 - 1), n, 1);
+    );
+    val = held_notes_dec[n];
+    val != 0 ? (
+      midisend(0, 0xB0 | (slider3 - 1), n, 127);
     );
     n += 1;
   );
