@@ -7,7 +7,7 @@ slider4:100<1,1000,1>Frequency (Hz)
 
 @init
 held_notes_inc = 0;
-held_notes_dec = 0;
+held_notes_dec = 128;
 trigger_interval = srate / slider4;
 sample_counter = 0;
 
