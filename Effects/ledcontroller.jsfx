@@ -11,15 +11,17 @@ desc: LED Strip Controller
 //   Note 14 on                   -> Red   channel (velocity * 2)
 //   Note 15 on                   -> Program (velocity = program number; 0 = passthrough)
 //   Note 15 off / velocity 0     -> Program = 0 (passthrough), position reset
-//   Note 16 on                   -> Generic argument (velocity written as-is to slot 14)
+//   Note 16 on                   -> Generic argument 1 (velocity written as-is to slot 14)
+//   Note 17 on                   -> Generic argument 2 (velocity written as-is to slot 15)
 //   CC 110                       -> brightness multiplier (value / 127)
 //
-// gmem layout per strip (16 cells, base = strip_idx * 16):
+// gmem layout per strip (17 cells, base = strip_idx * 17):
 //   [0..11]  packed ARGB int32 for each segment (raw brightness, no multiplier applied)
 //   [12]     current program number (0 = no program, emit segments as-is)
 //   [13]     program position in 32nd notes (resets on program change)
-//   [14]     generic argument (written as-is from Note 16 velocity)
-//   [15]     brightness multiplier (0.0-1.0); backend applies this when rendering
+//   [14]     generic argument 1 (written as-is from Note 16 velocity)
+//   [15]     generic argument 2 (written as-is from Note 17 velocity)
+//   [16]     brightness multiplier (0.0-1.0); backend applies this when rendering
 //
 // MIDI data is always forwarded unchanged to allow chaining multiple instances.
 
@@ -39,7 +41,7 @@ program_start_beat = 0.0;
 
 @slider
 strip_idx = slider1;                 // 0-based strip index (0..3)
-gmem_base = strip_idx * 16;          // each strip occupies 16 consecutive gmem cells
+gmem_base = strip_idx * 17;          // each strip occupies 17 consecutive gmem cells
 
 @block
 while (midirecv(offset, msg1, msg2, msg3)) (
@@ -60,8 +62,11 @@ while (midirecv(offset, msg1, msg2, msg3)) (
         program_start_beat = beat_position;
       );
     );
-    msg2 == 16 ? (                       // note 16 -> Generic argument written as-is to slot 14
+    msg2 == 16 ? (                       // note 16 -> Generic argument 1 written as-is to slot 14
       gmem[gmem_base + 14] = msg3;
+    );
+    msg2 == 17 ? (                       // note 17 -> Generic argument 2 written as-is to slot 15
+      gmem[gmem_base + 15] = msg3;
     );
   );
 
@@ -103,4 +108,4 @@ loop(12,
 // Write program number, position, and multiplier into the extra gmem slots.
 gmem[gmem_base + 12] = current_program;
 gmem[gmem_base + 13] = floor(program_pos);
-gmem[gmem_base + 15] = strip_mul;
+gmem[gmem_base + 16] = strip_mul;
