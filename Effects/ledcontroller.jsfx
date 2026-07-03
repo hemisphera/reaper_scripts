@@ -14,11 +14,12 @@ desc: LED Strip Controller
 //   Note 16 on                   -> Generic argument (velocity written as-is to slot 14)
 //   CC 110                       -> brightness multiplier (value / 127)
 //
-// gmem layout per strip (15 cells, base = strip_idx * 15):
-//   [0..11]  packed ARGB int32 for each segment
+// gmem layout per strip (16 cells, base = strip_idx * 16):
+//   [0..11]  packed ARGB int32 for each segment (raw brightness, no multiplier applied)
 //   [12]     current program number (0 = no program, emit segments as-is)
 //   [13]     program position in 32nd notes (resets on program change)
 //   [14]     generic argument (written as-is from Note 16 velocity)
+//   [15]     brightness multiplier (0.0-1.0); backend applies this when rendering
 //
 // MIDI data is always forwarded unchanged to allow chaining multiple instances.
 
@@ -38,7 +39,7 @@ program_start_beat = 0.0;
 
 @slider
 strip_idx = slider1;                 // 0-based strip index (0..3)
-gmem_base = strip_idx * 15;          // each strip occupies 15 consecutive gmem cells
+gmem_base = strip_idx * 16;          // each strip occupies 16 consecutive gmem cells
 
 @block
 while (midirecv(offset, msg1, msg2, msg3)) (
@@ -89,17 +90,17 @@ while (midirecv(offset, msg1, msg2, msg3)) (
 );
 
 // Write packed ARGB int32 into gmem for each of the 12 segments.
-// A = segment brightness scaled by the strip multiplier.
+// A = raw segment brightness (0-254) as received from MIDI; multiplier not applied here.
 // R, G, B = strip base color (shared across all segments for now).
 // Bitwise << produces signed int32 results, which is what the OSC int32 type requires.
 i = 0;
 loop(12,
-  a = floor(mem[i] * strip_mul);
-  a = max(0, min(255, a));
+  a = max(0, min(255, floor(mem[i])));
   gmem[gmem_base + i] = (a << 24) | (strip_r << 16) | (strip_g << 8) | strip_b;
   i += 1;
 );
 
-// Write program number and position into the extra gmem slots.
+// Write program number, position, and multiplier into the extra gmem slots.
 gmem[gmem_base + 12] = current_program;
 gmem[gmem_base + 13] = floor(program_pos);
+gmem[gmem_base + 15] = strip_mul;
