@@ -9,7 +9,16 @@ desc: LED Strip Controller
 //   Note 12 on                   -> Blue  channel (velocity * 2)
 //   Note 13 on                   -> Green channel (velocity * 2)
 //   Note 14 on                   -> Red   channel (velocity * 2)
+//   Note 15 on                   -> Program (velocity = program number; 0 = passthrough)
+//   Note 15 off / velocity 0     -> Program = 0 (passthrough), position reset
+//   Note 16 on                   -> Generic argument (velocity written as-is to slot 14)
 //   CC 110                       -> brightness multiplier (value / 127)
+//
+// gmem layout per strip (15 cells, base = strip_idx * 15):
+//   [0..11]  packed ARGB int32 for each segment
+//   [12]     current program number (0 = no program, emit segments as-is)
+//   [13]     program position in 32nd notes (resets on program change)
+//   [14]     generic argument (written as-is from Note 16 velocity)
 //
 // MIDI data is always forwarded unchanged to allow chaining multiple instances.
 
@@ -20,14 +29,16 @@ options:gmem=ledcontroller
 // Segment brightness values stored at local mem[0..11], range 0-254.
 i = 0; loop(12, mem[i] = 0; i += 1;);
 
-strip_r   = 255;
-strip_g   = 255;
-strip_b   = 255;
-strip_mul = 1.0;
+strip_r          = 255;
+strip_g          = 255;
+strip_b          = 255;
+strip_mul        = 1.0;
+current_program  = 0;
+program_start_beat = 0.0;
 
 @slider
 strip_idx = slider1;                 // 0-based strip index (0..3)
-gmem_base = strip_idx * 12;          // each strip occupies 12 consecutive gmem cells
+gmem_base = strip_idx * 15;          // each strip occupies 15 consecutive gmem cells
 
 @block
 while (midirecv(offset, msg1, msg2, msg3)) (
@@ -42,17 +53,39 @@ while (midirecv(offset, msg1, msg2, msg3)) (
     msg2 == 12 ? strip_b = msg3 * 2;    // note 12 -> Blue
     msg2 == 13 ? strip_g = msg3 * 2;    // note 13 -> Green
     msg2 == 14 ? strip_r = msg3 * 2;    // note 14 -> Red
+    msg2 == 15 ? (                       // note 15 -> Program (velocity = program number)
+      msg3 != current_program ? (
+        current_program = msg3;
+        program_start_beat = beat_position;
+      );
+    );
+    msg2 == 16 ? (                       // note 16 -> Generic argument written as-is to slot 14
+      gmem[gmem_base + 14] = msg3;
+    );
   );
 
   // Note Off (status 0x80) or Note On with velocity 0
   (status == 0x80 || (status == 0x90 && msg3 == 0)) ? (
     msg2 <= 11 ? mem[msg2] = 0;
+    msg2 == 15 ? (                       // note 15 off -> stop program
+      current_program != 0 ? (
+        current_program = 0;
+        program_start_beat = beat_position;
+      );
+    );
   );
 
   // CC 110 -> per-strip brightness multiplier (0.0-1.0)
   status == 0xB0 && msg2 == 110 ? (
     strip_mul = msg3 / 127;
   );
+);
+
+// Advance program position in 32nd notes while transport is playing.
+// beat_position is in quarter notes; *8 converts to 32nds.
+// Position is relative to the beat at which the current program was set.
+(play_state & 1) ? (
+  program_pos = max(0, (beat_position - program_start_beat) * 8);
 );
 
 // Write packed ARGB int32 into gmem for each of the 12 segments.
@@ -66,3 +99,7 @@ loop(12,
   gmem[gmem_base + i] = (a << 24) | (strip_r << 16) | (strip_g << 8) | strip_b;
   i += 1;
 );
+
+// Write program number and position into the extra gmem slots.
+gmem[gmem_base + 12] = current_program;
+gmem[gmem_base + 13] = floor(program_pos);
