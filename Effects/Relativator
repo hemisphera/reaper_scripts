@@ -1,7 +1,7 @@
 desc:Relativator
 
-slider1:0<0,8,1>Multiplier
-slider2:14<0,127,1>Base CC Number
+slider1:8<0,8,1>Multiplier
+slider2:14<0,120,1>Base CC Number
 slider3:0<0,127,1>CC +0 Value
 slider4:0<0,127,1>CC +1 Value
 slider5:0<0,127,1>CC +2 Value
@@ -30,18 +30,9 @@ while (midirecv(offset, msg1, msg2, msg3)) (
     idx = msg2 - slider2;
     val = msg3;
     
-    // Calculate offset
-    dist = abs(val - 63);
-    speed = max(63 - dist, 1);
-    delta = (slider1 * speed) / 8;
-    
-    // Apply logic: Add/Sub based on threshold
-    // Using explicit brackets for clarity to prevent logic leaks
-    val >= 63 ? (
-        float_values[idx] -= delta;
-    ) : (
-        float_values[idx] += delta;
-    );
+    // Decode two's complement: 1..63 = +1..+63, 64..127 = -64..-1, 0 = no change
+    step = val < 64 ? val : val - 128;
+    float_values[idx] += (slider1 * step) / 8;
     
     // Explicit Clamping
     float_values[idx] = min(max(float_values[idx], 0), 127);
