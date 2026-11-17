@@ -5,171 +5,115 @@ slider2:60<0,127,1>Trigger Note
 slider3:1<1,16,1>Trigger Channel
 
 @init
-held_notes    = 0;   // memory[0..7]:  note numbers of held set
-held_channels = 8;   // memory[8..15]: channels of held set
-phys_notes    = 16;  // memory[16..23]: physically pressed note numbers
-phys_channels = 24;  // memory[24..31]: channels of physically pressed notes
+ext_noinit    = 1;    // keep held notes when playback starts (otherwise @init would forget them without note-offs)
+held_notes   = 0;    // memory[0..7]:     note numbers of held set
+held_channels = 8;    // memory[8..15]:    channels of held set
+pressed       = 16;   // memory[16..2063]: physical key-down count per (channel * 128 + note)
+memset(pressed, 0, 16 * 128);
 held_count    = 0;
-physical_held = 0;
-collecting    = 0;
-phys_count    = 0;
-prev_enable   = 1;
-needs_release = 0;
+phys_count    = 0;    // total number of keys physically down
+collecting    = 0;    // 1 while the current chord is still being played
+hold_state    = slider1;
 
-@slider
-slider1 != prev_enable ? (
-  prev_enable = slider1;
-  slider1 == 0 ? (
-    // Hold turned off: queue a release
-    needs_release = 1;
-  ) : (
-    // Hold turned on: seed held set from currently physical notes
-    i = 0;
-    loop(phys_count,
-      held_notes[i]    = phys_notes[i];
-      held_channels[i] = phys_channels[i];
-      i += 1;
-    );
-    held_count    = phys_count;
-    physical_held = phys_count;
-    collecting    = phys_count > 0 ? 1 : 0;
+// Index of (channel, note) in the held set, or -1
+function find_held(c, n) local(i, r) (
+  r = -1;
+  i = 0;
+  loop(held_count,
+    held_notes[i] == n && held_channels[i] == c ? r = i;
+    i += 1;
   );
+  r;
+);
+
+// Send note-offs for the held set and clear it.
+// skip_pressed: leave notes whose key is still down sounding; their own note-off will pass through later.
+function release_held(ofs, skip_pressed) local(i, c, n) (
+  i = 0;
+  loop(held_count,
+    c = held_channels[i];
+    n = held_notes[i];
+    !(skip_pressed && pressed[c * 128 + n] > 0) ? midisend(ofs, $x80 | c, n, 0);
+    i += 1;
+  );
+  held_count = 0;
+  collecting = 0;
+);
+
+// Turn the keys physically down right now into the held set
+function seed_held() local(c, n) (
+  held_count = 0;
+  c = 0;
+  loop(16,
+    n = 0;
+    loop(128,
+      held_count < 8 && pressed[c * 128 + n] > 0 ? (
+        held_notes[held_count]    = n;
+        held_channels[held_count] = c;
+        held_count += 1;
+      );
+      n += 1;
+    );
+    c += 1;
+  );
+  collecting = phys_count > 0 ? 1 : 0;
+);
+
+function apply_hold(ofs) (
+  hold_state = slider1;
+  slider1 ? seed_held() : release_held(ofs, 1);
 );
 
 @block
-// Release held notes if hold was turned off — runs regardless of incoming MIDI
-needs_release ? (
-  i = 0;
-  loop(held_count,
-    midisend(0, $x80 | held_channels[i], held_notes[i], 0);
-    i += 1;
-  );
-  held_count    = 0;
-  physical_held = 0;
-  collecting    = 0;
-  needs_release = 0;
-);
+// Pick up changes of Hold Enable made via the slider or automation
+slider1 != hold_state ? apply_hold(0);
 
 while (midirecv(offset, msg1, msg2, msg3)) (
-  status = msg1 & $xF0;
-  ch     = msg1 & $x0F;
+  status   = msg1 & $xF0;
+  ch       = msg1 & $x0F;
+  note_on  = status == $x90 && msg3 > 0;
+  note_off = status == $x80 || (status == $x90 && msg3 == 0);
+  key      = ch * 128 + msg2;
 
-  // Check for hold toggle trigger note
-  is_trigger = 0;
-  (status == $x90 && msg3 > 0 && msg2 == slider2 && ch == (slider3 - 1)) ? (
-    is_trigger = 1;
-    slider1 = slider1 == 0 ? 1 : 0;
-    sliderchange(1);   // bitmask 1 = slider1; sliderchange(slider1) is wrong when slider1==0
-    prev_enable = slider1;
-    slider1 == 0 ? (
-      // Toggled OFF: release all held notes immediately
-      i = 0;
-      loop(held_count,
-        midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
-        i += 1;
+  (note_on || note_off) && msg2 == slider2 && ch == (slider3 - 1) ? (
+    // ---- Trigger note: toggle hold on note-on, swallow both on and off ----
+    note_on ? (
+      slider1 = slider1 == 0 ? 1 : 0;
+      sliderchange(1);   // bitmask 1 = slider1; sliderchange(slider1) is wrong when slider1==0
+      apply_hold(offset);
+    );
+
+  ) : note_on ? (
+    // ---- Note-on ----
+    slider1 ? (
+      // First note after all keys were released: stop the old chord, start a new one
+      !collecting ? (
+        release_held(offset, 0);
+        collecting = 1;
       );
-      held_count    = 0;
-      physical_held = 0;
-      collecting    = 0;
-    ) : (
-      // Toggled ON: seed held set from notes physically pressed right now
-      i = 0;
-      loop(phys_count,
-        held_notes[i]    = phys_notes[i];
-        held_channels[i] = phys_channels[i];
-        i += 1;
+      find_held(ch, msg2) >= 0 ? (
+        // Key pressed again within the chord: end the old note so the new one cleanly replaces it
+        midisend(offset, $x80 | ch, msg2, 0);
+      ) : held_count < 8 ? (
+        held_notes[held_count]    = msg2;
+        held_channels[held_count] = ch;
+        held_count += 1;
       );
-      held_count    = phys_count;
-      physical_held = phys_count;
-      collecting    = phys_count > 0 ? 1 : 0;
     );
-  );
-  (status == $x80 || (status == $x90 && msg3 == 0)) && msg2 == slider2 && ch == (slider3 - 1) ? (
-    is_trigger = 1;
-  );
-
-  !is_trigger ? (
-
-  // Always track physical key state (used to seed held set on enable)
-  (status == $x90 && msg3 > 0) ? (
-    phys_count < 8 ? (
-      phys_notes[phys_count]    = msg2;
-      phys_channels[phys_count] = ch;
-      phys_count += 1;
-    );
-  ) : (status == $x80 || (status == $x90 && msg3 == 0)) ? (
-    found = 0;
-    i = 0;
-    loop(phys_count,
-      !found ? (
-        phys_notes[i] == msg2 ? (
-          j = i;
-          loop(phys_count - i - 1,
-            phys_notes[j]    = phys_notes[j + 1];
-            phys_channels[j] = phys_channels[j + 1];
-            j += 1;
-          );
-          phys_count -= 1;
-          found = 1;
-        );
-      );
-      i += 1;
-    );
-  );
-
-  slider1 == 0 ? (
-    midisend(offset, msg1, msg2, msg3);
-  ) : (
-
-  // ---- Note-on (velocity > 0) ----
-  (status == $x90 && msg3 > 0) ? (
-
-    // Entering from holding state: release old notes and start fresh
-    collecting == 0 ? (
-      i = 0;
-      loop(held_count,
-        midisend(offset, $x80 | held_channels[i], held_notes[i], 0);
-        i += 1;
-      );
-      held_count    = 0;
-      physical_held = 0;
-      collecting    = 1;
-    );
-
-    // Skip duplicates
-    already_held = 0;
-    i = 0;
-    loop(held_count,
-      held_notes[i] == msg2 ? (already_held = 1;);
-      i += 1;
-    );
-
-    // Add to held set if room available and not a duplicate
-    held_count < 8 && !already_held ? (
-      held_notes[held_count]    = msg2;
-      held_channels[held_count] = ch;
-      held_count    += 1;
-      physical_held += 1;
-    );
-
+    pressed[key] += 1;
+    phys_count   += 1;
     midisend(offset, msg1, msg2, msg3);
 
-  ) : (status == $x80 || (status == $x90 && msg3 == 0)) ? (
-
+  ) : note_off ? (
     // ---- Note-off ----
-    in_held = 0;
-    i = 0;
-    loop(held_count,
-      held_notes[i] == msg2 ? (in_held = 1;);
-      i += 1;
+    pressed[key] > 0 ? (
+      pressed[key] -= 1;
+      phys_count   -= 1;
     );
-
-    in_held ? (
-      // Suppress the note-off; track physical release while collecting
-      collecting ? (
-        physical_held = max(physical_held - 1, 0);
-        physical_held == 0 ? (collecting = 0;);
-      );
+    slider1 ? (
+      // Swallow note-offs of held notes; pass all others
+      find_held(ch, msg2) < 0 ? midisend(offset, msg1, msg2, msg3);
+      phys_count == 0 ? collecting = 0;
     ) : (
       midisend(offset, msg1, msg2, msg3);
     );
@@ -178,21 +122,4 @@ while (midirecv(offset, msg1, msg2, msg3)) (
     // All other MIDI passes through untouched
     midisend(offset, msg1, msg2, msg3);
   );
-
-  ); // end slider1 == 1
-
-  ); // end !is_trigger
-);
-
-// Release held notes if toggle happened during this block's MIDI processing
-needs_release ? (
-  i = 0;
-  loop(held_count,
-    midisend(0, $x80 | held_channels[i], held_notes[i], 0);
-    i += 1;
-  );
-  held_count    = 0;
-  physical_held = 0;
-  collecting    = 0;
-  needs_release = 0;
 );

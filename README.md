@@ -50,3 +50,48 @@ Values are tracked internally as fractions, so low multipliers still add up over
 3. Optionally lower *Multiplier* for finer control (default `8` = full speed).
 4. Turn an encoder and watch the matching *CC +n Value* slider move.
 5. On the target FX parameter, open *Parameter modulation/MIDI link* → *Link from MIDI or FX parameter* and select the matching Relativator slider.
+
+### Noteholder
+
+`Effects/Noteholder` is a JSFX that **latches the chord you play**: notes keep sounding after you let go of the keys, until you start the next chord. It works like a sustain pedal that only lets go when you play something new. You can switch it on and off with a slider or with a dedicated MIDI note, for example a footswitch or a spare pad.
+
+#### How it works
+
+While *Hold Enable* is **On**:
+
+- Every note you play is passed through and added to the **held chord**. Its note-off is swallowed, so the note keeps sounding after you release the key.
+- Notes played while at least one key is still down are added to the same chord.
+- Once all keys are up, the chord keeps sounding. The **next note you play** first stops all held notes and then starts a new chord.
+- Up to **8 notes** are held. A 9th note in the same chord plays normally but is not held: it stops when you release its key.
+- Pressing a key again while the chord is still being played restarts that note: the effect sends a note-off for the old note before the new note-on, so no voice is left hanging.
+- Notes are told apart by note number **and** MIDI channel, so the same note on two channels is handled as two separate notes.
+
+While *Hold Enable* is **Off**, all MIDI passes through untouched.
+
+Switching hold:
+
+- **On → Off** immediately stops the held notes whose keys are already up. Notes whose keys you are still pressing keep sounding and stop when you release them, like lifting a sustain pedal.
+- **Off → On** while keys are pressed turns the notes you are holding into the held chord.
+
+All MIDI other than notes (CCs, pitch bend, program changes, …) always passes through.
+
+#### Sliders
+
+| Slider | Range | Default | Purpose |
+|---|---|---|---|
+| Hold Enable | Off / On | On | Switches hold on or off. Also toggled by the trigger note. |
+| Trigger Note | 0–127 | 60 (middle C) | Note number that toggles *Hold Enable*. |
+| Trigger Channel | 1–16 | 1 | MIDI channel the trigger note must arrive on. |
+
+#### Trigger note
+
+Each note-on of *Trigger Note* on *Trigger Channel* toggles *Hold Enable*, which you can see on the slider. The trigger note's own note-on and note-off are swallowed, so it never sounds. The same note number on **other** channels is treated as a normal note.
+
+To use a sustain-style footswitch or a pad, set it to send a note-on when pressed, and set *Trigger Note* and *Trigger Channel* to match.
+
+#### Example
+
+1. Insert *Noteholder* on an instrument track, before the instrument.
+2. Set *Trigger Note* / *Trigger Channel* to a note your footswitch or a spare pad sends.
+3. Play a chord and release it: it keeps sounding. Play another chord: the first one stops and the new one is held.
+4. Press the trigger to switch hold off: the held chord stops (except keys you are still pressing) and the keyboard plays normally again.
